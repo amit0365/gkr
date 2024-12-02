@@ -1,0 +1,11 @@
+[workspace]
+members = ["gkr"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.dev]
+opt-level = 0
+debug = true
