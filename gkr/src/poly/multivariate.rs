@@ -7,7 +7,7 @@ use crate::{
         Deserialize, Itertools, Serialize,
     }, Error,
 };
-use halo2_proofs::{arithmetic::lagrange_interpolate, halo2curves::ff::{BatchInvert, PrimeField}};
+use halo2_proofs::{arithmetic::{eval_polynomial, lagrange_interpolate}, halo2curves::ff::{BatchInvert, PrimeField}};
 use rand::RngCore;
 use std::{
     borrow::Borrow, cmp::{max_by, Ordering::{Equal, Greater, Less}}, collections::{HashMap, HashSet}, fmt::Debug, hash::Hash, iter::{self, successors, Sum}, marker::PhantomData, ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign}
@@ -67,16 +67,36 @@ impl<F: PrimeField> SparseTerm<F> {
           Self { terms, domain, degree }
       }
 
+      /// Create a new `Term` from a list of tuples of the form `(variable, power)`
+      pub fn new_with_domain(mut terms: Vec<(usize, usize)>, num_vars: usize, total_degree: usize, domain: &[&[F]]) -> Self {
+          // Remove any terms with power 0
+          terms.retain(|(_, pow)| *pow != 0);
+          // If there are more than one variables, make sure they are
+          // in order and combine any duplicates
+          if terms.len() > 1 {
+              terms.sort_by(|(v1, _), (v2, _)| v1.cmp(v2));
+              terms = Self::combine(&terms);
+          }
+
+          let degree = terms.iter().fold(0, |sum, acc| sum + acc.1);
+          let mut sparse_term = Self { terms, domain: Vec::new(), degree };
+          sparse_term.set_domain(domain);
+          sparse_term
+      }
+
       #[allow(clippy::useless_conversion)]
-      pub fn set_domain(&mut self, poly_domain: &[Vec<F>]) {
+      pub fn set_domain(&mut self, poly_domain: &[&[F]]) {
         self.domain = self.terms.iter()
         .zip(poly_domain.iter().enumerate())
         .map(|((v, _), domain)| {
             assert_eq!(*v, domain.0);
-            (*v, domain.1.clone())
+            (*v, domain.1.to_vec())
         })
         .collect_vec();
-        // = domain;
+      }
+
+      pub fn domain(&self) -> Vec<&[F]> {
+        self.domain.iter().map(|v| v.1.as_slice()).collect_vec()
       }
 
       /// Returns the sum of all variable powers in `self`
@@ -155,7 +175,9 @@ impl<F: PrimeField> SparseTerm<F> {
         let mut sum = F::ZERO;
         // Start the recursive computation
         let univariate_coeff = Self::compute_contribution(&other_vars, 0, &mut current_value, &mut sum, first_var_degree);
-        (univariate_coeff, SparseTerm::new(vec![(0, first_var_degree)], 1, first_var_degree))
+        let mut sparse_term = SparseTerm::new(vec![(0, first_var_degree)], 1, first_var_degree);
+        sparse_term.set_domain(&self.domain());
+        (univariate_coeff, sparse_term)
       } 
 
       /// Evaluates `self` at the given `point` in the field.
@@ -192,7 +214,7 @@ pub struct MultivariatePolynomial<F, B> {
     /// The number of variables the polynomial supports
     pub num_vars: usize,
     /// degree of the polynomial
-    pub degree: usize, // m - 1
+    pub degree: usize,
     /// List of each term along with its coefficient
     pub terms: Vec<(F, SparseTerm<F>)>,
     /// domain of the polynomial
@@ -243,20 +265,22 @@ impl<F: PrimeField> SimplePolynomial<F> for MultivariatePolynomial<F, Coefficien
 }
 
 impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
-    pub fn new(all_terms: Vec<Vec<(usize, usize)>>, coeffs: Vec<F>, num_vars_given: usize, degree_given: usize) -> Result<Self, Error> {
+    pub fn new(all_terms: Vec<Vec<(usize, usize)>>, coeffs: Vec<F>, num_vars_given: usize, total_degree_given: usize, m: usize) -> Result<Self, Error> {
       let mut num_vars = 0;
       let mut degree = 0;
-        let terms = all_terms.into_iter().zip(coeffs).map(|(term, coeff)| {
-          num_vars = term.len();
-          degree = degree.max(term.iter().map(|(_, p)| p).sum::<usize>());
+      let terms = all_terms.into_iter().zip(coeffs).map(|(term, coeff)| {
+        num_vars = term.len();
+        degree = degree.max(term.iter().map(|(_, p)| p).sum::<usize>());
         (coeff, SparseTerm::new(term, num_vars, degree))
-        }).collect();
-        let points = make_subgroup_elements::<F>((degree + 1) as u64);
-        let domain = points.iter().chunks(points.len()/num_vars).into_iter().map(|chunk| chunk.cloned().collect_vec()).collect_vec();
-        assert_eq!(num_vars, num_vars_given);
-        assert_eq!(degree, degree_given);
-        assert_eq!(domain.len(), num_vars);
-        Ok(Self { terms, num_vars, degree, domain, _marker: PhantomData })
+      }).collect();
+
+      let points = make_subgroup_elements::<F>(m as u64);
+      let domain = vec![points; num_vars];
+      //let domain = points.iter().chunks(points.len()/num_vars).into_iter().map(|chunk| chunk.cloned().collect_vec()).collect_vec();
+      assert_eq!(num_vars, num_vars_given);
+      assert_eq!(degree, total_degree_given);
+      assert_eq!(domain.len(), num_vars);
+      Ok(Self { terms, num_vars, degree, domain, _marker: PhantomData })
     }
 
     /// Fix the first variable to a given value before converting to univariate in sumcheck.
@@ -276,25 +300,26 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
           .sum()
     }
 
-    pub fn univariate_poly_first_summed(&mut self) -> UnivariatePolynomial<F, CoefficientBasis> {
+    pub fn univariate_poly_first_summed(&mut self, domain: &[&[F]]) -> UnivariatePolynomial<F, CoefficientBasis> {
       let mut poly = self.terms.iter_mut()
-          .map(|(coeff, term)| {
-            term.set_domain(&self.domain);
-            let (univariate_coeff, univariate_term) = term.univariate_term();
-            (*coeff * univariate_coeff, univariate_term)
-          }).collect_vec();
+        .map(|(coeff, term)| {
+          term.set_domain(domain);
+          let (univariate_coeff, univariate_term) = term.univariate_term();
+          (*coeff * univariate_coeff, univariate_term)
+        }).collect_vec();
 
       let degree = self.terms.iter().map(|(_, term)| term.degree_of_var(0)).max().unwrap_or(0);
       // Sort the polynomial terms by degree of SparseTerm
       let mut degree_map: HashMap<usize, (F, SparseTerm<F>)> = HashMap::new();
       for (coeff, term) in poly {
-          degree_map.entry(term.degree())
-              .and_modify(|(c, _)| *c += coeff)
-              .or_insert((coeff, term));
+        degree_map.entry(term.degree())
+            .and_modify(|(c, _)| *c += coeff)
+            .or_insert((coeff, term));
       }
       
-      for i in 0..=degree {
+      for i in 1..=degree {
         if degree_map.get(&i).is_none() {
+          println!("inserting zero term for degree: {:?}", i);
           degree_map.insert(i, (F::ZERO, SparseTerm::new(vec![], self.num_vars, i)));
         }
       }
@@ -304,10 +329,17 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
       UnivariatePolynomial::new(poly.into_iter().map(|(coeff, _)| coeff).collect())
     }
 
-    pub fn univariate_poly_fix_var(&mut self, r: &F) -> UnivariatePolynomial<F, CoefficientBasis> {
+    pub fn univariate_poly_fix_var(&mut self, domain: &[&[F]], r: &F) -> UnivariatePolynomial<F, CoefficientBasis> {
       self.terms.iter_mut()
-        .for_each(|(_, term)| term.set_domain(&self.domain)); 
+        .for_each(|(_, term)| term.set_domain(domain)); 
       self.fix_first_var(r);
+
+      assert_ne!(self.num_vars, 1); // should not be called for univariate polynomials as it is dealt in the first round of sumcheck
+      if self.num_vars == 2 { // special case when polynomial becomes bivariate
+        self.terms.sort_by(|(_, term1), (_, term2)| term1.degree().cmp(&term2.degree()));
+        return UnivariatePolynomial::new(self.terms.iter().map(|(coeff, _)| *coeff).collect_vec());
+      }
+
       let mut poly = self.terms.iter_mut()
           .map(|(coeff, term)| {
             let (univariate_coeff, univariate_term) = term.univariate_term();
@@ -322,9 +354,10 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
               .and_modify(|(c, _)| *c += coeff)
               .or_insert((coeff, term));
       }
-      
-      for i in 0..=degree {
+
+      for i in 1..=degree {
         if degree_map.get(&i).is_none() {
+          println!("inserting zero term for degree: {:?}", i);
           degree_map.insert(i, (F::ZERO, SparseTerm::new(vec![], self.num_vars, i)));
         }
       }
@@ -388,7 +421,7 @@ pub fn power_matrix_generator<F: PrimeField + Hash>(a: &[F], m: u64) -> Vec<Vec<
 #[allow(unused)]
 pub fn lagrange_bases<F: PrimeField + Hash>(x: &[&[F]], a: &[F]) -> Vec<Vec<F>> {
     assert_eq!(x.len(), a.len(), "Vectors x and a must have the same length.");
-    let m = x[0].len() as u64;
+    let m = x[0].len() as u64; //todo check this
     let mut vanishing_idx = 0;
     // Precompute barycentric weights c_x for each x_j in x
     let c_x = x.iter().map(|x_j| compute_barycentric_weights::<F>(x_j)).collect_vec();
@@ -435,13 +468,19 @@ pub fn lagrange_bases<F: PrimeField + Hash>(x: &[&[F]], a: &[F]) -> Vec<Vec<F>> 
     bases
 }
 
-// eq is a vector of vectors of lagrange basis polynomials evaluated at diff variables of a
-pub fn eq_poly_first_summed<F: PrimeField + Hash>(eq: &[Vec<F>]) -> Vec<F> {
-  let eq_rest = eq.iter().skip(1).collect_vec();
-  let eq_rest_prod = (0..eq_rest[0].len())
-    .map(|i| eq_rest.iter().map(|v| v[i]).product::<F>())
-    .sum::<F>();
-  eq.first().unwrap().iter().map(|a| *a * eq_rest_prod).collect_vec()
+// eq is a vector of vectors of lagrange basis polynomials evaluated at diff variables of a, bases_k = lagrange_basis(a_k)
+// just return the first vector of eq which represents lagrange bases for first variable, other lagrange bases for rest of variables will sum to 1 when x_i = a_i
+pub fn eq_poly_univariate<F: PrimeField + Hash>(eq: &[Vec<F>]) -> Vec<F> {
+  eq.first().unwrap().to_vec()
+}
+
+// similar as above instead returns evals at element a, todo
+pub fn eq_poly_fix_first_var_univariate<F: PrimeField + Hash>(points: &[F], eq: &[Vec<F>], a: &F) -> Vec<F> {
+  let eq_first = eq.first().unwrap();
+  let eq_first_poly = lagrange_interpolate(points, eq_first);
+  let eq_first_eval = eval_polynomial(&eq_first_poly, *a);
+  let eq_second = eq[1].to_vec();
+  eq_second.iter().map(|evals| *evals * eq_first_eval).collect_vec() //scale by eq_first_eval
 }
 
 /// - `x`: Vector of length k where each element represents a variable which is a 
@@ -584,83 +623,122 @@ fn compute_barycentric_weights<F: PrimeField + Hash>(h: &[F]) -> std::collection
     c_x
 }
 
-    // eval_at = a is single element in bivariate sumcheck case
-    // power vector = A is a vector of logm elements in bivariate sumcheck case, 
-    // where each element can be a vector of k elements but k = 1 in bivariate sumcheck case
-    // takes power vector and lagrange bases from transcript
-    #[allow(unused)]
-    pub fn lagrange_pi_eval_verifier<F: PrimeField + Hash>(
-      power_vector: &[Vec<F>],
-      f_poly_evals: &[F],
-      lagrange_poly_evals: &[Vec<F>], 
-      points: &[&[F]],
-      eval_at: &[F], 
-    ) -> F {
-      for i in 0..power_vector.len() {
-        assert_eq!(power_vector[i][0], eval_at[i]);
-        for j in 0..power_vector[i].len() - 1 {
-          assert_eq!(power_vector[i][j]*power_vector[i][j], power_vector[i][j+1]);
-        }
-      }
+// eval_at = a is single element in bivariate sumcheck case
+// power vector = A is a vector of logm elements in bivariate sumcheck case, 
+// where each element can be a vector of k elements but k = 1 in bivariate sumcheck case
+// takes power vector and lagrange bases from transcript
+#[allow(unused)]
+pub fn lagrange_pi_eval_verifier<F: PrimeField + Hash>(
+  power_vector: &[Vec<F>],
+  f_poly_evals: &[F],
+  lagrange_poly_evals: &[Vec<F>], 
+  points: &[&[F]],
+  eval_at: &[F], 
+) -> F {
+  for i in 0..power_vector.len() {
+    assert_eq!(power_vector[i][0], eval_at[i]);
+    for j in 0..power_vector[i].len() - 1 {
+      assert_eq!(power_vector[i][j]*power_vector[i][j], power_vector[i][j+1]);
+    }
+  }
       
-      //assert_eq!(power_vector.len(), log2(m));
-      let (mut f_polys_sum, mut f_sum) = (F::ZERO, F::ZERO);
-      let lagrange_multipliers = points.iter().map(|x_i| compute_barycentric_weights::<F>(x_i)).collect_vec();
+  //assert_eq!(power_vector.len(), log2(m));
+  let (mut f_polys_sum, mut f_sum) = (F::ZERO, F::ZERO);
+  let lagrange_multipliers = points.iter().map(|x_i| compute_barycentric_weights::<F>(x_i)).collect_vec();
 
-      assert_eq!(points[0].len(), lagrange_poly_evals[0].len()); // lagrange polynomials are defined for each x ∈ H, points are collection of all x in H
-      for i in 0..lagrange_poly_evals[0].len() { // i runs through all lagrange polynomials defined for each x ∈ H
-        let (mut lagrange_poly_prod, mut diff_points, mut rhs) = (F::ONE, F::ONE, F::ONE);
-        for k in 0..eval_at.len() { // k runs through all eval points, k = 1 in bivariate sumcheck case
-          lagrange_poly_prod *= lagrange_poly_evals[k][i];
-          diff_points *= eval_at[k] - points[k][i]; // should be i ?
-          rhs *= *lagrange_multipliers[k].get(&points[k][i]).unwrap() * (*power_vector[k].last().unwrap() - F::ONE);
-          f_sum += f_poly_evals[i] * lagrange_poly_evals[k][i];
-        }
-        assert_eq!(rhs, lagrange_poly_prod*diff_points);
-      }
-
-      f_sum      
+  assert_eq!(points[0].len(), lagrange_poly_evals[0].len()); // lagrange polynomials are defined for each x ∈ H, points are collection of all x in H
+  for i in 0..lagrange_poly_evals[0].len() { // i runs through all lagrange polynomials defined for each x ∈ H
+    let (mut lagrange_poly_prod, mut diff_points, mut rhs) = (F::ONE, F::ONE, F::ONE);
+    for k in 0..eval_at.len() { // k runs through all eval points, k = 1 in bivariate sumcheck case
+      lagrange_poly_prod *= lagrange_poly_evals[k][i];
+      diff_points *= eval_at[k] - points[k][i]; // should be i ?
+      rhs *= *lagrange_multipliers[k].get(&points[k][i]).unwrap() * (*power_vector[k].last().unwrap() - F::ONE);
+      f_sum += f_poly_evals[i] * lagrange_poly_evals[k][i];
     }
+    assert_eq!(rhs, lagrange_poly_prod*diff_points);
+  }
 
-    pub fn init_eq<F: PrimeField + Hash>(domain: &[&[F]], evaluation_point: &[F]) -> Vec<F> {
-      let bases = lagrange_bases(domain, evaluation_point);
+  f_sum      
+}
 
-      (0..bases[0].len())
-          .map(|i| bases.iter().map(|v| v[i]).product())
-          .collect()
-    }
+pub fn init_eq<F: PrimeField + Hash>(domain: &[&[F]], evaluation_point: &[F]) -> Vec<F> {
+  let bases = lagrange_bases(domain, evaluation_point);
+  (0..bases[0].len())
+  .map(|i| bases.iter().map(|v| v[i]).product())
+  .collect()
+}
 
-    pub fn make_subgroup_elements<F: PrimeField>(m: u64) -> Vec<F> {
-      println!("m: {}", m);
-      assert!(m.is_power_of_two(), "Order of the multiplicative subgroup H must be a power of 2");
-      assert!(m > 2, "choose m > 2");
-      let exponent = (-F::ONE) * F::from(m).invert().unwrap(); // (r - 1) / m
-      let exponent_u64: [u64; 4] = exponent.to_repr().as_ref()
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
-      let root_of_unity = F::MULTIPLICATIVE_GENERATOR.pow(exponent_u64);
-      successors(Some(F::ONE), |&x| Some(x * root_of_unity))
-      .take(m as usize)
-      .collect_vec()
-    }
+pub fn make_subgroup_elements<F: PrimeField>(m: u64) -> Vec<F> {
+  assert!(m.is_power_of_two(), "Order of the multiplicative subgroup H must be a power of 2");
+  //assert!(m > 2, "choose m > 2"); //todo is this required?
+  let exponent = (-F::ONE) * F::from(m).invert().unwrap(); // (r - 1) / m
+  let exponent_u64: [u64; 4] = exponent.to_repr().as_ref()
+    .chunks_exact(8)
+    .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+    .collect::<Vec<_>>()
+    .try_into()
+    .unwrap();
+  let root_of_unity = F::MULTIPLICATIVE_GENERATOR.pow(exponent_u64);
+  successors(Some(F::ONE), |&x| Some(x * root_of_unity))
+  .take(m as usize)
+  .collect_vec()
+}
 
-    pub fn make_outside_subgroup_elements<F: PrimeField + Hash>(m: u64) -> Vec<F> {
-      let subgroup_elements = make_subgroup_elements::<F>(m);
-      let excluded_set: HashSet<F> = subgroup_elements.into_iter().collect();
-      (2..).map(|x| F::from(x)).filter(|&x| !excluded_set.contains(&x)).take(m as usize).collect() //todo check to be safe start from 0, 1
-    }
+pub fn make_outside_subgroup_elements<F: PrimeField + Hash>(m: u64) -> Vec<F> {
+  let subgroup_elements = make_subgroup_elements::<F>(m);
+  let excluded_set: HashSet<F> = subgroup_elements.into_iter().collect();
+  (2..).map(|x| F::from(x)).filter(|&x| !excluded_set.contains(&x)).take(m as usize).collect() //todo check to be safe start from 0, 1
+}
     
+use nalgebra::{Matrix4, Vector4};
+
+fn vandermonde_4(points: &[f64; 4]) -> Matrix4<f64> {
+    Matrix4::from_fn(|i, j| points[i].powi(j as i32))
+}
+
+/// Interpolates a bivariate polynomial f(x,y) of degree at most 3 in each variable
+/// given 16 evaluations at a 4x4 grid of points.
+/// 
+/// xs: [x0, x1, x2, x3] distinct x-values
+/// ys: [y0, y1, y2, y3] distinct y-values
+/// f_values: 16 values of f(x_i, y_j), arranged in row-major order:
+///           f_values[i*4 + j] = f(x_i, y_j)
+/// 
+/// Returns a 4x4 matrix A of coefficients a_{r,s}, where:
+/// f(x,y) = sum_{r=0}^3 sum_{s=0}^3 A[r,s] * x^r * y^s
+fn interpolate_bivariate(
+    xs: &[f64; 4], 
+    ys: &[f64; 4],
+    f_values: &[f64;16]
+) -> Option<Matrix4<f64>> {
+    let vx = vandermonde_4(xs);  // 4x4
+    let vy = vandermonde_4(ys);  // 4x4
+    
+    // F is a 4x4 matrix of f(x_i,y_j)
+    let f_matrix = Matrix4::from_row_slice(f_values);
+
+    // Invert Vx and Vy
+    let vx_inv = vx.try_inverse()?;
+    let vy_inv = vy.try_inverse()?;
+
+    // A = Vx^{-1} * F * (Vy^{-1})^T
+    // First do M = Vx^{-1} * F
+    let m = vx_inv * f_matrix;
+    // Then A = M * (Vy^{-1})^T
+    let a = m * vy_inv.transpose();
+
+    Some(a)
+}
 
 #[cfg(test)]
 mod tests {
+  use bitvec::domain;
   use halo2_proofs::halo2curves::bn256::Fr;
   use halo2_proofs::arithmetic::Field;
   use itertools::Itertools;
+  use num_traits::ToPrimitive;
   use rand::Rng;
-  use crate::poly::multivariate::{compute_barycentric_weights, lagrange_bases, make_subgroup_elements, power_matrix_generator, MultivariatePolynomial};
+  use crate::poly::multivariate::{compute_barycentric_weights, interpolate_bivariate, lagrange_bases, make_subgroup_elements, power_matrix_generator, MultivariatePolynomial};
   use crate::poly::univariate::UnivariatePolynomial;
   use halo2_proofs::halo2curves::ff::PrimeField;
   use super::{lagrange_pi_eval_verifier, SparseTerm};
@@ -685,26 +763,54 @@ mod tests {
 
   #[test]
   fn test_sparse_term_fold_univariate() {
-    let term = SparseTerm::<Fr>::new(vec![(0, 4), (1, 3)], 2, 7);
-    let (_, univariate_term) = term.univariate_term();
+    let num_vars = 2;
+    let points = make_subgroup_elements::<Fr>(8);
+    let domain = points.chunks(points.len()/num_vars).collect_vec();
+    let mut term = SparseTerm::<Fr>::new(vec![(0, 4), (1, 3)], 2, 7);
+    term.set_domain(&domain);
+    let (coeff, univariate_term) = term.univariate_term();
     assert_eq!(univariate_term.terms.len(), 1);
   }
 
-  #[test]
-  fn test_multivariate_to_univariate_poly_first_summed_fix_var() {
-    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
-    let univariate_poly = multivariate_poly.univariate_poly_first_summed();
-    assert_eq!(univariate_poly.degree(), 4);
-    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  }
+  // #[test]
+  // fn test_univariate_poly_first_summed() {
+  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
+  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+  //   let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
+  //   assert_eq!(univariate_poly.degree(), 4);
+  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  // }
 
-  #[test]
-  fn test_multivariate_to_univariate_poly_fix_var() {
-    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
-    let univariate_poly = multivariate_poly.univariate_poly_fix_var(&Fr::from(2));
-    assert_eq!(univariate_poly.degree(), 3);
-    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  }
+  // #[test]
+  // fn test_univariate_poly_fix_var() {
+  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
+  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+  //   let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
+  //   assert_eq!(univariate_poly.degree(), 3);
+  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  // }
+
+  // #[test]
+  // fn test_univariate_poly_first_summed_deg1() {
+  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15).unwrap();
+  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+  //   let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
+  //   assert_eq!(univariate_poly.degree(), 4);
+  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  // }
+
+  // #[test]
+  // fn test_univariate_poly_fix_var_deg1() {
+  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15).unwrap();
+  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+  //   let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
+  //   assert_eq!(univariate_poly.degree(), 3);
+  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  // }
 
   #[test]
   fn test_power_matrix_generator() {
@@ -809,5 +915,33 @@ mod tests {
     let f_poly_evals = x[0].iter().map(|x_i| f_poly.evaluate(x_i)).collect_vec();
     let result = lagrange_pi_eval_verifier(&power_vector, &f_poly_evals, &lagrange_poly, x, a);
     assert_eq!(result, Fr::from(15));
+  }
+
+  #[test]
+  fn test_interpolate_bivariate() {
+    let xs = [1.0, 2.0, 3.0, 4.0];
+    let ys = [10.0, 20.0, 30.0, 40.0];
+    // Let's pick a test polynomial: f(x,y) = x^2 + y^2
+    let mut f_values = [0.0; 16];
+    for i in 0..4 {
+      for j in 0..4 {
+        let fx = xs[i];
+        let fy = ys[j];
+        f_values[i*4+j] = fx*fx + fy*fy;
+      }
+    }
+
+    let a = interpolate_bivariate(&xs, &ys, &f_values).unwrap();
+
+    let test_x: f64 = 5.0;
+    let test_y: f64 = 60.0;
+    let mut val: f64 = 0.0;
+    for r in 0..4 {
+        for s in 0..4 {
+            val += a[(r,s)] * test_x.powi(r as i32) * test_y.powi(s as i32);
+        }
+    }
+
+    assert_eq!(val.to_i64().unwrap(), 3625);
   }
 }

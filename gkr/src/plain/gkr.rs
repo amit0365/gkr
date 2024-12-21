@@ -1,18 +1,13 @@
-use core::num;
 use std::cmp::max_by;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::rc::Rc;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use itertools::Itertools;
 use halo2_proofs::arithmetic::Field;
 use halo2_proofs::halo2curves::ff::PrimeField;
-use halo2_proofs::plonk::Expression;
 
-use crate::poly::multivariate::{make_subgroup_elements, MultivariatePolynomial, SparseTerm};
+use crate::poly::multivariate::{eq_poly_fix_first_var_univariate, eq_poly_univariate, lagrange_bases, make_subgroup_elements, MultivariatePolynomial};
 use crate::poly::univariate::{CoefficientBasis, UnivariatePolynomial};
-use crate::poly::Polynomial;
-use crate::util::arithmetic::powers;
 use crate::util::transcript::{FieldTranscriptRead, FieldTranscriptWrite};
 use crate::Error;
 
@@ -25,6 +20,12 @@ pub struct AddGate<F: Field>{
 }
 
 impl<F: Field> AddGate<F> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
     pub fn evaluate(&self, inputs: &[F]) -> F {
         inputs.iter().sum()
     }
@@ -241,68 +242,57 @@ struct EqTimesGateEvalSumcheckClaims<F: PrimeField + Hash> {
 	claimed_evaluations: Vec<F>,   // y in the paper
     domain:              Vec<Vec<F>>, // same domain for all claims
 	manager:             ClaimsManager<F>,
-	input_preprocessors: Vec<MultivariatePolynomial<F, CoefficientBasis>>, // P_u in the paper, so that we don't need to pass along all the circuit's evaluations
-	eq: MultivariatePolynomial<F, CoefficientBasis>,     // ∑_i τ_i eq(x_i, -)
+    /// We denote input_preprocessors, P_i(x, y) as a multivariate polynomial  
+    /// s.t. deg of sum_check_poly f'(P_0(x, y), ..., P_k(x, y)) in each variable <= |H| - 1
+    /// while the overall degree should be low s.t.  d/|F| << 1
+	input_preprocessors: Vec<MultivariatePolynomial<F, CoefficientBasis>>, 
+	eq: Vec<Vec<F>>,     // ∑_i τ_i eq(x_i, -)
 }
 
 impl<F: PrimeField + Hash> EqTimesGateEvalSumcheckClaims<F> {
-    pub fn compute_gj(&self, input_preprocessors: Vec<UnivariatePolynomial<F, CoefficientBasis>>, eq: UnivariatePolynomial<F, CoefficientBasis>) -> Vec<F> { // can use fft here
-        let num_evals = 1 + self.wire.gate.degree(); // guaranteed to be no smaller than the actual deg(g_j)
-        let mut gj = vec![F::ZERO; num_evals];
+    pub fn compute_gj(&self, 
+        input_preprocessors: Vec<UnivariatePolynomial<F, CoefficientBasis>>, 
+        eq_evals_univariate: Vec<F>
+    ) -> Vec<F> { // can use fft here
+        let num_evals = 1 + self.eq.len(); // guaranteed to be no smaller than the actual deg(g_j)
         let points = make_subgroup_elements::<F>(num_evals as u64);
-        for i in 0..num_evals {
-            let inputs = input_preprocessors.iter().map(|p| p.evaluate(&points[i])).collect_vec();
-            gj[i] = self.wire.gate.evaluate(&inputs);
-        }
-        gj
+        points.iter()
+        .zip(&eq_evals_univariate)
+        .map(|(p, eq)| *eq * self.wire.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec()))
+        .collect()
     }
 }
 
 impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
-    fn combine_and_first_poly(&mut self, combination_coeff: F) -> Vec<F> { //eq combining algo
-        // let vars_num = self.vars_num();
-        // let eq_length = 1 << vars_num;
-        // let claims_num = self.claims_num();
+    fn combine_and_first_poly(&mut self, domain: &[&[F]], combination_coeff: F) -> Vec<F> { //eq combining algo    
+        let vars_num = self.vars_num();
+        let eq_length = 1 << vars_num;
+        let claims_num = self.claims_num();
     
-        // // initialize the eq tables
-        // self.eq = MultivariatePolynomial::new(vec![SparseTerm::new(vec![])], vec![F::ONE]).unwrap();
-        // for i in 0..eq_length {
-        //     self.eq.terms.push((F::ZERO, SparseTerm::new(vec![])));
-        // }
-        // c.eq[0] = c.engine.One()
-        // sumcheck.Eq(c.engine, c.eq, sumcheck.ReferenceBigIntSlice(c.evaluationPoints[0]))
-    
-        // newEq := make(sumcheck.NativeMultilinear, eqLength)
-        // for i := 0; i < eqLength; i++ {
-        //     newEq[i] = new(big.Int)
-        // }
-        // aI := new(big.Int).Set(combinationCoeff)
-    
-        // for k := 1; k < claimsNum; k++ { // TODO: parallelizable?
-        //     // define eq_k = aᵏ eq(x_k1, ..., x_kn, *, ..., *) where x_ki are the evaluation points
-        //     newEq[0].Set(aI)
-        //     sumcheck.EqAcc(c.engine, c.eq, newEq, sumcheck.ReferenceBigIntSlice(c.evaluationPoints[k]))
-        //     if k+1 < claimsNum {
-        //         aI.Mul(aI, combinationCoeff)
-        //     }
-        // }
+        // initialize the eq tables
+        let eq_acc = (1..claims_num).fold(vec![vec![F::ZERO; eq_length]; claims_num], |mut acc, k| {
+            let eq = lagrange_bases(&self.domain.iter().map(|v| v.as_slice()).collect_vec(), &self.evaluation_points[k]);
+			acc[k].iter_mut().zip(&eq[k]).for_each(|(acc, eq)| *acc = *eq * combination_coeff.pow([k as u64]));
+			acc
+        });
+		self.eq = eq_acc.clone();
     
         // from this point on the claim is a rather simple one: g = E(h) × R_v (P_u0(h), ...) 
         // where E and the P_u are multilinear and R_v is of low-degree
-        let mut input_preprocessors = Vec::new();
+		let mut input_preprocessors = Vec::new();
         for preprocessor in &mut self.input_preprocessors {
-            input_preprocessors.push(preprocessor.univariate_poly_first_summed());
+            input_preprocessors.push(preprocessor.univariate_poly_first_summed(domain));
         }
-        let eq = self.eq.univariate_poly_first_summed();
-        self.compute_gj(input_preprocessors, eq)
+		let eq_evals_univariate = eq_poly_univariate(&eq_acc); 
+        self.compute_gj(input_preprocessors, eq_evals_univariate)
     }
 
-    fn next(&mut self, element: F) -> Vec<F> {
-        let mut input_preprocessors = Vec::new();
+    fn next(&mut self, domain: &[&[F]], element: F) -> Vec<F> {
+		let mut input_preprocessors = Vec::new();
         for preprocessor in &mut self.input_preprocessors {
-            input_preprocessors.push(preprocessor.univariate_poly_fix_var(&element));
+            input_preprocessors.push(preprocessor.univariate_poly_fix_var(domain, &element));
         }
-        let eq = self.eq.univariate_poly_fix_var(&element);
+        let eq = eq_poly_fix_first_var_univariate(&self.domain[1], &self.eq, &element); // domain for second variable
         self.compute_gj(input_preprocessors, eq)
     }
 
@@ -310,8 +300,8 @@ impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
         todo!()
     }
 
-    fn domain(&self) -> Vec<&[F]> {
-        self.domain.iter().map(|v| v.as_slice()).collect::<Vec<_>>()
+    fn domain(&self) -> Vec<Vec<F>> {
+        self.domain.clone()
     }
 
     fn claims_num(&self) -> usize {
@@ -426,7 +416,7 @@ impl<F: PrimeField + Hash> ClaimsManager<F> {
             manager:             self.clone(),
             domain:              lazy.domain.clone(),
             input_preprocessors: vec![MultivariatePolynomial::default(); wire.inputs.len()],
-            eq: MultivariatePolynomial::default(),
+            eq: Vec::new(),
         };
     
         if wire.is_input() {

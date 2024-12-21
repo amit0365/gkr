@@ -8,6 +8,7 @@ mod msm;
 
 pub use bh::BooleanHypercube;
 pub use bitvec::field::BitField;
+use num_traits::identities::One;
 
 pub use halo2_proofs::halo2curves::{
     group::{
@@ -236,6 +237,28 @@ pub fn into_coordinate_proj<C: CurveAffine>(ec_point: &C) -> ProjectivePoint<C::
     }
 }
 
+/// Convert a [`BigUint`] into a [`PrimeField`] .
+pub fn fe_from_big<F: PrimeField>(big: BigUint) -> F {
+    let bytes = big.to_bytes_le();
+    let mut repr = F::Repr::default();
+    assert!(bytes.len() <= repr.as_ref().len());
+    repr.as_mut()[..bytes.len()].clone_from_slice(bytes.as_slice());
+    F::from_repr(repr).unwrap()
+}
+
+pub fn fe_to_limbs<F1: PrimeField, F2: PrimeField, const LIMBS: usize, const BITS: usize>(
+    fe: F1,
+) -> [F2; LIMBS] {
+    let big = BigUint::from_bytes_le(fe.to_repr().as_ref());
+    let mask = &((BigUint::one() << BITS) - 1usize);
+    (0usize..)
+        .step_by(BITS)
+        .take(LIMBS)
+        .map(|shift| fe_from_big((&big >> shift) & mask))
+        .collect_vec()
+        .try_into()
+        .unwrap()
+}
 
 pub trait FieldUtils where Self: PrimeField {
     fn scale(&self, scale: u64) -> Self;
