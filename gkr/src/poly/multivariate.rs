@@ -283,11 +283,15 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
       Ok(Self { terms, num_vars, degree, domain, _marker: PhantomData })
     }
 
+    pub fn degree(&self) -> usize {
+      self.degree
+    }
+
     /// Fix the first variable to a given value before converting to univariate in sumcheck.
-    pub fn fix_first_var(&mut self, point: &F){
+    pub fn fix_first_var(&mut self, point: &F) -> Vec<(F, SparseTerm<F>)> {
       self.terms.iter_mut()
-      .map(|(coeff, term)| (*coeff * term.fix_first_var(point), term))
-      .collect_vec();
+      .map(|(coeff, term)| (*coeff * term.fix_first_var(point), term.clone()))
+      .collect_vec()
     }
 
     pub fn evaluate(&self, r: &[F]) -> F {
@@ -311,33 +315,48 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
       let degree = self.terms.iter().map(|(_, term)| term.degree_of_var(0)).max().unwrap_or(0);
       // Sort the polynomial terms by degree of SparseTerm
       let mut degree_map: HashMap<usize, (F, SparseTerm<F>)> = HashMap::new();
-      for (coeff, term) in poly {
+      for (coeff, term) in &poly {
         degree_map.entry(term.degree())
-            .and_modify(|(c, _)| *c += coeff)
-            .or_insert((coeff, term));
+            .and_modify(|(c, _)| *c += *coeff)
+            .or_insert((*coeff, term.clone()));
       }
-      
-      for i in 1..=degree {
+
+      for i in 0..=degree { // todo: check if this is correct
         if degree_map.get(&i).is_none() {
-          println!("inserting zero term for degree: {:?}", i);
           degree_map.insert(i, (F::ZERO, SparseTerm::new(vec![], self.num_vars, i)));
         }
       }
 
       poly = degree_map.into_values().collect();
-      poly.sort_by(|(_, term1), (_, term2)| term1.degree().cmp(&term2.degree()));      
+      poly.sort_by(|(_, term1), (_, term2)| term1.degree().cmp(&term2.degree()));  
       UnivariatePolynomial::new(poly.into_iter().map(|(coeff, _)| coeff).collect())
     }
 
     pub fn univariate_poly_fix_var(&mut self, domain: &[&[F]], r: &F) -> UnivariatePolynomial<F, CoefficientBasis> {
       self.terms.iter_mut()
         .for_each(|(_, term)| term.set_domain(domain)); 
-      self.fix_first_var(r);
+      self.terms = self.fix_first_var(r);
 
       assert_ne!(self.num_vars, 1); // should not be called for univariate polynomials as it is dealt in the first round of sumcheck
       if self.num_vars == 2 { // special case when polynomial becomes bivariate
-        self.terms.sort_by(|(_, term1), (_, term2)| term1.degree().cmp(&term2.degree()));
-        return UnivariatePolynomial::new(self.terms.iter().map(|(coeff, _)| *coeff).collect_vec());
+        let degree = self.terms.iter().map(|(_, term)| term.degree_of_var(0)).max().unwrap();
+        // Sort the polynomial terms by degree of SparseTerm
+        let mut degree_map: HashMap<usize, (F, SparseTerm<F>)> = HashMap::new();
+        for (coeff, term) in &self.terms {
+            degree_map.entry(term.degree())
+                .and_modify(|(c, _)| *c += *coeff)
+                .or_insert((*coeff, term.clone()));
+        }
+  
+        for i in 0..=degree {
+          if degree_map.get(&i).is_none() { // only adds zero coeffs for terms that are not present wrt to the position of the degree, constant starts from 0
+            degree_map.insert(i, (F::ZERO, SparseTerm::new(vec![], self.num_vars, i)));
+          }
+        }
+  
+        let mut poly: Vec<(F, SparseTerm<F>)> = degree_map.into_values().collect();
+        poly.sort_by(|(_, term1), (_, term2)| term1.degree().cmp(&term2.degree()));  
+        return UnivariatePolynomial::new(poly.into_iter().map(|(coeff, _)| coeff).collect_vec());
       }
 
       let mut poly = self.terms.iter_mut()
@@ -355,9 +374,8 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
               .or_insert((coeff, term));
       }
 
-      for i in 1..=degree {
+      for i in 0..=degree {
         if degree_map.get(&i).is_none() {
-          println!("inserting zero term for degree: {:?}", i);
           degree_map.insert(i, (F::ZERO, SparseTerm::new(vec![], self.num_vars, i)));
         }
       }
@@ -404,9 +422,10 @@ pub fn power_matrix_generator<F: PrimeField + Hash>(a: &[F], m: u64) -> Vec<Vec<
   for &base in a {
       let mut power_vector = Vec::with_capacity((log_m + 1) as usize);
       let mut current_power = base;
+      //todo optimization: skip sending first power, verifier already has this
       for _ in 0..log_m + 1 { 
-          power_vector.push(current_power);
-          current_power = current_power * current_power;
+        power_vector.push(current_power);
+        current_power = current_power * current_power;
       }
       power_matrix.push(power_vector);
   }
@@ -416,6 +435,7 @@ pub fn power_matrix_generator<F: PrimeField + Hash>(a: &[F], m: u64) -> Vec<Vec<
 
 /// - `x`: Vector of length k where each element represents a variable which is a 
 /// vector of all values of that variable in subgroup H i.e. x_j ∀ j ∈ [k] , x_j_i ∀ i ∈ [m]
+/// for this implementation, the domain of each variable is the full domain of the polynomial, i.e. ∀ x ∈H
 /// - `a`: k evaluation points representing k variables 
 /// bases are lagrange basis polynomials evaluated at some a_k for all x_k, i.e bases_k = lagrange_basis(a_k)
 #[allow(unused)]
@@ -479,7 +499,7 @@ pub fn eq_poly_fix_first_var_univariate<F: PrimeField + Hash>(points: &[F], eq: 
   let eq_first = eq.first().unwrap();
   let eq_first_poly = lagrange_interpolate(points, eq_first);
   let eq_first_eval = eval_polynomial(&eq_first_poly, *a);
-  let eq_second = eq[1].to_vec();
+  let eq_second = eq[1].to_vec(); // already in eval form
   eq_second.iter().map(|evals| *evals * eq_first_eval).collect_vec() //scale by eq_first_eval
 }
 
@@ -668,6 +688,7 @@ pub fn init_eq<F: PrimeField + Hash>(domain: &[&[F]], evaluation_point: &[F]) ->
   .collect()
 }
 
+//powers of roots of unity that make the multiplicative subgroup H
 pub fn make_subgroup_elements<F: PrimeField>(m: u64) -> Vec<F> {
   assert!(m.is_power_of_two(), "Order of the multiplicative subgroup H must be a power of 2");
   //assert!(m > 2, "choose m > 2"); //todo is this required?
@@ -911,10 +932,10 @@ mod tests {
     let power_vector = power_matrix_generator(a, m);
     let lagrange_poly = lagrange_bases(x, a);
     //simple poly x^3 + x^2 + x + 1
-    let f_poly = UnivariatePolynomial::new(vec![Fr::ONE, Fr::ONE, Fr::ONE, Fr::ONE]);
+    let f_poly = UnivariatePolynomial::new(vec![Fr::ONE, Fr::ONE, Fr::from(5), Fr::ONE]);
     let f_poly_evals = x[0].iter().map(|x_i| f_poly.evaluate(x_i)).collect_vec();
     let result = lagrange_pi_eval_verifier(&power_vector, &f_poly_evals, &lagrange_poly, x, a);
-    assert_eq!(result, Fr::from(15));
+    assert_eq!(result, Fr::from(31));
   }
 
   #[test]

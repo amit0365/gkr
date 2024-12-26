@@ -404,6 +404,7 @@ const NUM_LIMBS: usize = 3;
 const RATE: usize = 3;
 const T: usize = 4;
 
+#[derive(Debug)]
 pub struct PoseidonNativeTranscript<F: PrimeField, S> {
     state: PoseidonHash<F, T, RATE>,
     stream: S,

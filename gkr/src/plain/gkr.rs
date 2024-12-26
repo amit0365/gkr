@@ -15,6 +15,39 @@ use crate::Error;
 use super::sumcheck::{sumcheck_prove, sumcheck_verify, Claims, LazyClaims, SumCheckProof};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IdentityGate<F: Field>{
+    _marker: PhantomData<F>,
+}
+
+impl<F: Field> IdentityGate<F> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, inputs: &[F]) -> F {
+        inputs[0]
+    }
+
+    fn degree(&self) -> usize {
+        1
+    }
+
+    fn nb_inputs(&self) -> usize {
+        1
+    }
+
+    fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "identity".to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AddGate<F: Field>{
     _marker: PhantomData<F>,
 }
@@ -45,8 +78,6 @@ impl<F: Field> AddGate<F> {
     fn name(&self) -> String {
         "add".to_string()
     }
-
-    
 }
 pub struct MulGate;
 // Implementations of GateInstructions<F> for each gate
@@ -172,6 +203,16 @@ pub struct EqTimesGateEvalSumcheckLazyClaims<F: PrimeField + Hash> {
 }
 
 impl<F: PrimeField + Hash> LazyClaims<F> for EqTimesGateEvalSumcheckLazyClaims<F> {
+    fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>> {
+        //self.input_preprocessors.clone()
+        todo!()
+    }
+
+    fn gate(&self) -> AddGate<F> {
+        //self.gate.clone()
+        todo!()
+    }
+
     fn verify_final_eval(&mut self, r: &[F], combination_coeff: F, purported_value: F, proof: &[F]) -> Result<(), Error> {
         let input_evaluations_no_redundancy = proof;
 
@@ -226,9 +267,21 @@ impl<F: PrimeField + Hash> LazyClaims<F> for EqTimesGateEvalSumcheckLazyClaims<F
         self.evaluation_points[0].len()
     }
 
-    fn combined_sum(&self, a: F) -> F {
+    fn combined_sum(&self, poly_evaluation: &[F], var_idx: usize) -> F {
         //eval_polynomial(&self.claimed_evaluations, a)
         todo!()
+    }
+
+    fn claimed_sum(&self) -> F {
+        unimplemented!()
+    }
+
+    fn domain(&self) -> Vec<Vec<F>> {
+        self.domain.clone()
+    }
+
+    fn full_domain(&self) -> Vec<F> {
+        self.domain.iter().flatten().cloned().collect_vec()
     }
 
     fn degree(&self) -> usize {
@@ -264,6 +317,16 @@ impl<F: PrimeField + Hash> EqTimesGateEvalSumcheckClaims<F> {
 }
 
 impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
+    fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>> {
+        //self.input_preprocessors.clone()
+        todo!()
+    }
+
+    fn gate(&self) -> AddGate<F> {
+        //self.wire.gate.clone()
+        todo!()
+    }
+
     fn combine_and_first_poly(&mut self, domain: &[&[F]], combination_coeff: F) -> Vec<F> { //eq combining algo    
         let vars_num = self.vars_num();
         let eq_length = 1 << vars_num;
@@ -304,8 +367,16 @@ impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
         self.domain.clone()
     }
 
+    fn full_domain(&self) -> Vec<F> {
+        self.domain.iter().flatten().cloned().collect_vec()
+    }
+
     fn claims_num(&self) -> usize {
         self.evaluation_points.len()
+    }
+
+    fn claimed_sum(&self) -> F {
+        unimplemented!()
     }
 
     fn vars_num(&self) -> usize {
