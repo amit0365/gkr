@@ -275,8 +275,8 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
       }).collect();
 
       let points = make_subgroup_elements::<F>(m as u64);
-      let domain = vec![points; num_vars];
-      //let domain = points.iter().chunks(points.len()/num_vars).into_iter().map(|chunk| chunk.cloned().collect_vec()).collect_vec();
+      let domain = points.iter().chunks(points.len()/num_vars).into_iter().take(num_vars).map(|chunk| chunk.cloned().collect_vec()).collect_vec();
+      
       assert_eq!(num_vars, num_vars_given);
       assert_eq!(degree, total_degree_given);
       assert_eq!(domain.len(), num_vars);
@@ -386,35 +386,6 @@ impl<F: PrimeField> MultivariatePolynomial<F, CoefficientBasis> {
     }
 }
 
-/// Computes eq(x, a) = product_{j=1}^k L_{x_j}^{H}(a_j) ∀ x ∈ H
-/// where L_{x_j}^{H}(u) = c_{x_j} * (u^m - 1) / (u - x_j)
-///
-/// - `x`: Vector of length k where each element represents a variable which is a 
-/// vector of all values of that variable in subgroup H i.e. x_j ∀ j ∈ [k] , x_j_i ∀ i ∈ [m]
-/// - `a`: evaluation points (length k)
-/// - `m`: Order of the subgroup H = length of x
-/// - `H`: Vector containing elements of the subgroup H
-/// Returns an element of the field F.
-/// x and a are single elements in bivariate sumcheck case
-// pub fn eval_eq<F: PrimeField + Hash>(x: &[F], a: &[F]) -> F {
-//     assert_eq!(x.len(), a.len(), "Vectors x and a must have the same length.");
-//     let m = x.len() as u64;
-//     let mut result = F::ONE;
-
-//     // Precompute barycentric weights c_x for each x_j in x
-//     let c_x = compute_barycentric_weights::<F>(x);
-//     for (j, (&x_j, &a_j)) in x.iter().zip(a.iter()).enumerate() {
-//         let c_xj = c_x.get(&x_j).expect("x_j not in H");
-//         let numerator = a_j.pow(&[m]) - F::ONE;
-//         let denominator = a_j - x_j;
-//         let inv_denominator = denominator.invert().unwrap_or_else(|| panic!("Inversion failed"));
-//         let l_xj = *c_xj * numerator * inv_denominator;
-//         result *= l_xj;
-//     }
-
-//     result
-// }
-
 #[allow(unused)]
 pub fn power_matrix_generator<F: PrimeField + Hash>(a: &[F], m: u64) -> Vec<Vec<F>> {
   let log_m = 64 - m.leading_zeros() - 1; // Compute log2(m)
@@ -441,7 +412,7 @@ pub fn power_matrix_generator<F: PrimeField + Hash>(a: &[F], m: u64) -> Vec<Vec<
 #[allow(unused)]
 pub fn lagrange_bases<F: PrimeField + Hash>(x: &[&[F]], a: &[F]) -> Vec<Vec<F>> {
     assert_eq!(x.len(), a.len(), "Vectors x and a must have the same length.");
-    let m = x[0].len() as u64; //todo check this
+    let m = x[0].len() as u64; 
     let mut vanishing_idx = 0;
     // Precompute barycentric weights c_x for each x_j in x
     let c_x = x.iter().map(|x_j| compute_barycentric_weights::<F>(x_j)).collect_vec();
@@ -492,6 +463,13 @@ pub fn lagrange_bases<F: PrimeField + Hash>(x: &[&[F]], a: &[F]) -> Vec<Vec<F>> 
 // just return the first vector of eq which represents lagrange bases for first variable, other lagrange bases for rest of variables will sum to 1 when x_i = a_i
 pub fn eq_poly_univariate<F: PrimeField + Hash>(eq: &[Vec<F>]) -> Vec<F> {
   eq.first().unwrap().to_vec()
+  
+  // let subdomain_len = eq[0].len();
+  // let mut prod = vec![F::ONE; subdomain_len];
+  // for (j, prod_j) in prod.iter_mut().enumerate() {
+  //   *prod_j *= eq.iter().skip(1).map(|eq_i| eq_i[j]).product::<F>();
+  // }
+  // prod
 }
 
 // similar as above instead returns evals at element a, todo
@@ -502,63 +480,6 @@ pub fn eq_poly_fix_first_var_univariate<F: PrimeField + Hash>(points: &[F], eq: 
   let eq_second = eq[1].to_vec(); // already in eval form
   eq_second.iter().map(|evals| *evals * eq_first_eval).collect_vec() //scale by eq_first_eval
 }
-
-/// - `x`: Vector of length k where each element represents a variable which is a 
-/// vector of all values of that variable in subgroup H i.e. x_j ∀ j ∈ [k] , x_j_i ∀ i ∈ [m]
-/// - `a`: k evaluation points representing k variables 
-/// bases are lagrange basis polynomials evaluations at diff variables of a, i.e bases_k = lagrange_basis(a_k)
-// #[allow(unused)]
-// pub fn lagrange_bases_coeff<F: PrimeField + Hash>(x: &[&[F]], a: &[F]) -> Vec<UnivariatePolynomial<F, CoefficientBasis>> {
-//     assert_eq!(x.len(), a.len(), "Vectors x and a must have the same length.");
-//     let m = x[0].len() as u64;
-//     let mut vanishing_idx = 0;
-//     // Precompute barycentric weights c_x for each x_j in x
-//     let c_x = x.iter().map(|x_j| compute_barycentric_weights::<F>(x_j)).collect_vec();
-//     let rational: Vec<Vec<Option<(F, F, F)>>> = x.iter().zip(a.iter()).enumerate().map(|(k, (x_j, &a_j))| {
-//         x_j.iter().enumerate().map(|(i, &x_ji)| {
-//             let c_xj = c_x[k].get(&x_ji).expect("x_j not in H");
-//             let numerator = a_j.pow([m]) - F::ONE;
-//             let denominator = a_j - x_ji;
-//             if numerator == denominator { // lagrange basis evaluated at a group element
-//               vanishing_idx = i;
-//               None
-//           } else {
-//               Some((*c_xj, numerator, denominator))
-//           }
-//         }).collect_vec()
-//     }).collect_vec();
-
-//     if rational.iter().any(|v| v.iter().any(|opt| opt.is_none())) {
-//       return vec![UnivariatePolynomial::new(vec![F::ZERO; m as usize].iter().enumerate().map(|(i, _)| if i == vanishing_idx { F::ONE } else { F::ZERO }).collect_vec())];
-//     }
-
-//     // Batch invert denominators
-//     let mut denominators: Vec<F> = rational.iter().flatten().filter_map(|opt| opt.map(|(_, _, d)| d)).collect();
-//     denominators.batch_invert();
-
-//     // Unflatten denominators back into chunks
-//     let mut denominator_chunks = Vec::new();
-//     let chunk_size = denominators.len() / rational.len();
-//     for chunk in denominators.chunks(chunk_size) {
-//         denominator_chunks.push(chunk.to_vec());
-//     }
-
-//     // Initialize lagrange bases
-//     let mut bases = vec![Vec::new(); rational.len()];
-//     // Compute lagrange bases
-//     for k in 0..rational.len() {
-//       for (opt, inv_denominator) in rational[k].iter().zip(denominator_chunks[k].clone()) {
-//         if let Some((c_xj, numerator, _)) = opt {
-//           bases[k].push(*c_xj * numerator * inv_denominator);
-//         }
-//       }
-//     } 
-
-//     assert_eq!(bases[0].len(), m as usize);
-//     bases.iter()
-//         .map(|poly| UnivariatePolynomial::new(lagrange_interpolate(&eval_points, poly)))
-//         .collect_vec()
-// }
 
 /// - `x`: Vector of length k where each element represents a variable which is a 
 /// vector of all values of that variable in subgroup H i.e. x_j ∀ j ∈ [k] , x_j_i ∀ i ∈ [m]
@@ -681,13 +602,6 @@ pub fn lagrange_pi_eval_verifier<F: PrimeField + Hash>(
   f_sum      
 }
 
-pub fn init_eq<F: PrimeField + Hash>(domain: &[&[F]], evaluation_point: &[F]) -> Vec<F> {
-  let bases = lagrange_bases(domain, evaluation_point);
-  (0..bases[0].len())
-  .map(|i| bases.iter().map(|v| v[i]).product())
-  .collect()
-}
-
 //powers of roots of unity that make the multiplicative subgroup H
 pub fn make_subgroup_elements<F: PrimeField>(m: u64) -> Vec<F> {
   assert!(m.is_power_of_two(), "Order of the multiplicative subgroup H must be a power of 2");
@@ -793,45 +707,45 @@ mod tests {
     assert_eq!(univariate_term.terms.len(), 1);
   }
 
-  // #[test]
-  // fn test_univariate_poly_first_summed() {
-  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
-  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
-  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
-  //   let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
-  //   assert_eq!(univariate_poly.degree(), 4);
-  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  // }
+  #[test]
+  fn test_univariate_poly_first_summed() {
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+    let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+    let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
+    assert_eq!(univariate_poly.degree(), 4);
+    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  }
 
-  // #[test]
-  // fn test_univariate_poly_fix_var() {
-  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15).unwrap();
-  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
-  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
-  //   let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
-  //   assert_eq!(univariate_poly.degree(), 3);
-  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  // }
+  #[test]
+  fn test_univariate_poly_fix_var() {
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 4), (1, 3), (2, 2), (3, 6)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+    let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+    let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
+    assert_eq!(univariate_poly.degree(), 3);
+    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  }
 
-  // #[test]
-  // fn test_univariate_poly_first_summed_deg1() {
-  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15).unwrap();
-  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
-  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
-  //   let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
-  //   assert_eq!(univariate_poly.degree(), 4);
-  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  // }
+  #[test]
+  fn test_univariate_poly_first_summed_deg1() {
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+    let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+    let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
+    assert_eq!(univariate_poly.degree(), 4);
+    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  }
 
-  // #[test]
-  // fn test_univariate_poly_fix_var_deg1() {
-  //   let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15).unwrap();
-  //   let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
-  //   let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
-  //   let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
-  //   assert_eq!(univariate_poly.degree(), 3);
-  //   assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
-  // }
+  #[test]
+  fn test_univariate_poly_fix_var_deg1() {
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
+    let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
+    let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
+    assert_eq!(univariate_poly.degree(), 3);
+    assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
+  }
 
   #[test]
   fn test_power_matrix_generator() {
@@ -913,7 +827,7 @@ mod tests {
     // x is a single outer vector in bivariate sumcheck case
     let m = 1 << rand::thread_rng().gen_range(2..10); // order of the multiplicative subgroup H
     let x: &[&[Fr]] = &[&make_subgroup_elements::<Fr>(m)];
-    let a: &[Fr] = &[Fr::from(2)]; // a is single element in bivariate sumcheck case
+    let a: &[Fr] = &[Fr::from(3)]; // a is single element in bivariate sumcheck case
     let lagrange_poly = lagrange_bases(x, a);
     //simple poly x^3 + x^2 + x + 1
     let f_poly = UnivariatePolynomial::new(vec![Fr::ONE, Fr::ONE, Fr::ONE, Fr::ONE]);
@@ -921,7 +835,7 @@ mod tests {
     for i in 0..x[0].len() {
       f_evaluated += lagrange_poly[0][i] * f_poly.evaluate(&x[0][i]);
     }
-    assert_eq!(f_evaluated, Fr::from(15));
+    assert_eq!(f_evaluated, Fr::from(40));
   }
 
   #[test]

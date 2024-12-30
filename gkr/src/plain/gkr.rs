@@ -79,58 +79,108 @@ impl<F: Field> AddGate<F> {
         "add".to_string()
     }
 }
-pub struct MulGate;
-// Implementations of GateInstructions<F> for each gate
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MulGate<F: Field>{
+    _marker: PhantomData<F>,
+}
+
+impl<F: Field> MulGate<F> {
+    fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    fn evaluate(&self, inputs: &[F]) -> F {
+        inputs.iter().product()
+    }
+
+    fn degree(&self) -> usize {
+        1
+    }
+
+    fn nb_inputs(&self) -> usize {
+        2
+    }
+
+    fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "mul".to_string()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AnyGate<F: Field> {
-    AddGate(AddGate<F>),
-    // MulGate(MulGate),
+    Add(AddGate<F>),
+    Identity(IdentityGate<F>),
+    Mul(MulGate<F>),
     // Other gate variants
 }
 
 impl<F: Field> GateInstructions<F> for AnyGate<F> {
     fn evaluate(&self, inputs: &[F]) -> F {
         match self {
-            AnyGate::AddGate(gate) => gate.evaluate(inputs),
-            // AnyGate::MulGate(gate) => gate.evaluate(inputs),
+            AnyGate::Add(gate) => gate.evaluate(inputs),
+            AnyGate::Identity(gate) => gate.evaluate(inputs),
+            AnyGate::Mul(gate) => gate.evaluate(inputs),
             // Other variants
         }
     }
 
     fn degree(&self) -> usize {
         match self {
-            AnyGate::AddGate(gate) => gate.degree(),
-            // AnyGate::MulGate(gate) => gate.degree(),
+            AnyGate::Add(gate) => gate.degree(),
+            AnyGate::Identity(gate) => gate.degree(),
+            AnyGate::Mul(gate) => gate.degree(),
             // Other variants
         }
     }   
 
     fn nb_inputs(&self) -> usize {
         match self {
-            AnyGate::AddGate(gate) => gate.nb_inputs(),
-            // AnyGate::MulGate(gate) => gate.nb_inputs(),
+            AnyGate::Add(gate) => gate.nb_inputs(),
+            AnyGate::Identity(gate) => gate.nb_inputs(),
+            AnyGate::Mul(gate) => gate.nb_inputs(),
             // Other variants
         }
     }
 
     fn nb_outputs(&self) -> usize {
         match self {
-            AnyGate::AddGate(gate) => gate.nb_outputs(),
-            // AnyGate::MulGate(gate) => gate.nb_outputs(),
+            AnyGate::Add(gate) => gate.nb_outputs(),
+            AnyGate::Identity(gate) => gate.nb_outputs(),
+            AnyGate::Mul(gate) => gate.nb_outputs(),
             // Other variants
         }
     }
 
     fn name(&self) -> String {
         match self {
-            AnyGate::AddGate(gate) => gate.name(),
-            // AnyGate::MulGate(gate) => gate.name(),
+            AnyGate::Add(gate) => gate.name(),
+            AnyGate::Identity(gate) => gate.name(),
+            AnyGate::Mul(gate) => gate.name(),
             // Other variants
         }
     }
 }
 
+impl<F: Field> AnyGate<F> {
+    pub fn new_add() -> Self {
+        Self::Add(AddGate::new())
+    }
+    
+    pub fn new_identity() -> Self {
+        Self::Identity(IdentityGate::new()) 
+    }
+    
+    pub fn new_mul() -> Self {
+        Self::Mul(MulGate::new())
+    }
+}
 
 pub trait GateInstructions<F: Field> {
     fn evaluate(&self, input: &[F]) -> F;
@@ -145,12 +195,25 @@ pub struct Wire<F: Field + Hash> {
     gate: AnyGate<F>,
     inputs: Vec<Wire<F>>,
     nb_unique_outputs: usize,
+    is_input_left: bool,
+    is_input_right: bool,
     _marker: PhantomData<F>,
 }
 
 pub type GKRCircuit<F> = Vec<Wire<F>>;
 
 impl<F: Field + Hash> Wire<F> {
+    fn new(gate: AnyGate<F>, inputs: Vec<Wire<F>>, nb_unique_outputs: usize, is_input_left: bool, is_input_right: bool) -> Self {
+        Self {
+            gate,
+            inputs,
+            nb_unique_outputs,
+            is_input_left,
+            is_input_right,
+            _marker: PhantomData,
+        }
+    }
+
     fn is_input(&self) -> bool {
         self.inputs.is_empty()
     }
@@ -204,59 +267,15 @@ pub struct EqTimesGateEvalSumcheckLazyClaims<F: PrimeField + Hash> {
 
 impl<F: PrimeField + Hash> LazyClaims<F> for EqTimesGateEvalSumcheckLazyClaims<F> {
     fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>> {
-        //self.input_preprocessors.clone()
-        todo!()
+        self.wire.inputs.iter().map(|input| self.manager.assignment[input].clone()).collect_vec()
     }
 
-    fn gate(&self) -> AddGate<F> {
-        //self.gate.clone()
-        todo!()
+    fn gate(&self) -> AnyGate<F> {
+        self.wire.gate.clone()
     }
 
     fn verify_final_eval(&mut self, r: &[F], combination_coeff: F, purported_value: F, proof: &[F]) -> Result<(), Error> {
-        let input_evaluations_no_redundancy = proof;
-
-        // // the eq terms
-        // let num_claims = self.evaluation_points.len();
-        // let mut evaluation = eval_eq(&self.evaluation_points[num_claims - 1], r, M);
-        // for i in (0..num_claims - 1).rev() {
-        //     evaluation.mul_assign(combination_coeff);
-        //     let eq = eval_eq(&self.evaluation_points[i], r, M);
-        //     evaluation.add_assign(eq);
-        // }
-
-        // // the g(...) term
-        // let gate_evaluation = if self.wire.is_input() {
-        //     self.manager.assignment[&self.wire].evaluate(r)
-        // } else {
-        //     let mut input_evaluations = vec![F::default(); self.wire.inputs.len()];
-        //     let mut indexes_in_proof = HashMap::new();
-
-        //     let mut proof_i = 0;
-        //     for (in_i, input) in self.wire.inputs.iter().enumerate() {
-        //         let index_in_proof = if let Some(&index) = indexes_in_proof.get(&(input.clone())) {
-        //             index
-        //         } else {
-        //             let index = proof_i;
-        //             indexes_in_proof.insert(input, index);
-
-        //             // defer verification, store new claim
-        //             self.manager.add(input.clone(), r, input_evaluations_no_redundancy[index]);
-        //             proof_i += 1;
-        //             index
-        //         };
-        //         input_evaluations[in_i] = input_evaluations_no_redundancy[index_in_proof];
-        //     }
-        //     if proof_i != input_evaluations_no_redundancy.len() {
-        //         return Err(Error::InvalidSumcheck(format!("{} input wire evaluations given, {} expected", input_evaluations_no_redundancy.len(), proof_i)));
-        //     }
-        //     self.wire.gate.evaluate(&input_evaluations)
-        // };
-
-        // evaluation.mul_assign(gate_evaluation);
-
-        // assert_eq!(evaluation, purported_value);
-        Ok(())
+		unimplemented!()
     }
 
     fn claims_num(&self) -> usize {
@@ -268,12 +287,15 @@ impl<F: PrimeField + Hash> LazyClaims<F> for EqTimesGateEvalSumcheckLazyClaims<F
     }
 
     fn combined_sum(&self, poly_evaluation: &[F], var_idx: usize) -> F {
-        //eval_polynomial(&self.claimed_evaluations, a)
-        todo!()
+		// already have evals over the full domain, so we can just sum over respective domain
+		// note that full domain is distributed over variables respectively
+		let partition = poly_evaluation.len()/self.vars_num();
+		poly_evaluation[(var_idx)*partition..(var_idx+1)*partition].iter().sum::<F>()
     }
 
     fn claimed_sum(&self) -> F {
-        unimplemented!()
+        // use rlc to combine the evaluations
+        self.claimed_evaluations[0]
     }
 
     fn domain(&self) -> Vec<Vec<F>> {
@@ -307,55 +329,63 @@ impl<F: PrimeField + Hash> EqTimesGateEvalSumcheckClaims<F> {
         input_preprocessors: Vec<UnivariatePolynomial<F, CoefficientBasis>>, 
         eq_evals_univariate: Vec<F>
     ) -> Vec<F> { // can use fft here
-        let num_evals = 1 + self.eq.len(); // guaranteed to be no smaller than the actual deg(g_j)
-        let points = make_subgroup_elements::<F>(num_evals as u64);
-        points.iter()
-        .zip(&eq_evals_univariate)
-        .map(|(p, eq)| *eq * self.wire.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec()))
-        .collect()
+		let full_domain = self.domain.iter().flatten().cloned().collect_vec();
+		full_domain.iter()
+		.zip(&eq_evals_univariate)
+		.map(|(p, eq)| self.gate().evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec())) //*eq * 
+		.collect()
     }
 }
 
 impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
     fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>> {
-        //self.input_preprocessors.clone()
-        todo!()
+        self.input_preprocessors.clone()
     }
 
-    fn gate(&self) -> AddGate<F> {
-        //self.wire.gate.clone()
-        todo!()
+    fn eq(&self) -> Vec<Vec<F>> {
+        self.eq.clone()
     }
 
-    fn combine_and_first_poly(&mut self, domain: &[&[F]], combination_coeff: F) -> Vec<F> { //eq combining algo    
-        let vars_num = self.vars_num();
-        let eq_length = 1 << vars_num;
+    fn gate(&self) -> AnyGate<F> {
+        self.wire.gate.clone()
+    }
+
+    fn combine_and_first_poly(&mut self, domain: &[&[F]], a: F) -> Vec<F> { //eq combining algo    
+		let vars_num = self.vars_num();
+        let eq_length  = vars_num;
+		assert_eq!(domain.len(), eq_length);
+		let full_domain = self.full_domain();
+		let full_domain_vec = vec![full_domain.as_slice(); vars_num];
         let claims_num = self.claims_num();
-    
-        // initialize the eq tables
-        let eq_acc = (1..claims_num).fold(vec![vec![F::ZERO; eq_length]; claims_num], |mut acc, k| {
-            let eq = lagrange_bases(&self.domain.iter().map(|v| v.as_slice()).collect_vec(), &self.evaluation_points[k]);
-			acc[k].iter_mut().zip(&eq[k]).for_each(|(acc, eq)| *acc = *eq * combination_coeff.pow([k as u64]));
+
+		// Batching subprotocol for GKR, section 6.3 in paper
+		// initialize the eq tables where lagrange bases are evaluations for all x in H at a_k
+		let eq = lagrange_bases(&full_domain_vec, &self.evaluation_points[0]);
+		assert_eq!(eq.len(), eq_length);
+		assert_eq!(eq[0].len(), full_domain.len());
+        let eq_acc = (1..claims_num).fold(eq, |mut acc, k| {
+            let eq = lagrange_bases(&full_domain_vec, &self.evaluation_points[k]);
+			acc[k].iter_mut().zip(&eq[k]).for_each(|(acc, eq)| *acc = *eq * a.pow([k as u64]));
 			acc
         });
 		self.eq = eq_acc.clone();
-    
+		
         // from this point on the claim is a rather simple one: g = E(h) × R_v (P_u0(h), ...) 
         // where E and the P_u are multilinear and R_v is of low-degree
 		let mut input_preprocessors = Vec::new();
-        for preprocessor in &mut self.input_preprocessors {
+        for (i, preprocessor) in &mut self.input_preprocessors.iter_mut().enumerate() {
             input_preprocessors.push(preprocessor.univariate_poly_first_summed(domain));
         }
 		let eq_evals_univariate = eq_poly_univariate(&eq_acc); 
         self.compute_gj(input_preprocessors, eq_evals_univariate)
     }
 
-    fn next(&mut self, domain: &[&[F]], element: F) -> Vec<F> {
+    fn next(&mut self, domain: &[&[F]], element: F, var_idx: usize) -> Vec<F> {
 		let mut input_preprocessors = Vec::new();
         for preprocessor in &mut self.input_preprocessors {
             input_preprocessors.push(preprocessor.univariate_poly_fix_var(domain, &element));
         }
-        let eq = eq_poly_fix_first_var_univariate(&self.domain[1], &self.eq, &element); // domain for second variable
+        let eq = eq_poly_fix_first_var_univariate(&self.full_domain(), &self.eq, &element); // domain for second variable
         self.compute_gj(input_preprocessors, eq)
     }
 
@@ -389,59 +419,6 @@ impl<F: PrimeField + Hash> Claims<F> for EqTimesGateEvalSumcheckClaims<F> {
 
 }
 
-// func (c *eqTimesGateEvalSumcheckClaims) Combine(combinationCoeff *big.Int) sumcheck.NativePolynomial {
-// 	varsNum := c.NbVars()
-// 	eqLength := 1 << varsNum
-// 	claimsNum := c.NbClaims()
-
-// 	// initialize the eq tables
-// 	c.eq = make(sumcheck.NativeMultilinear, eqLength)
-// 	for i := 0; i < eqLength; i++ {
-// 		c.eq[i] = new(big.Int)
-// 	}
-// 	c.eq[0] = c.engine.One()
-// 	sumcheck.Eq(c.engine, c.eq, sumcheck.ReferenceBigIntSlice(c.evaluationPoints[0]))
-
-// 	newEq := make(sumcheck.NativeMultilinear, eqLength)
-// 	for i := 0; i < eqLength; i++ {
-// 		newEq[i] = new(big.Int)
-// 	}
-// 	aI := new(big.Int).Set(combinationCoeff)
-
-// 	for k := 1; k < claimsNum; k++ { // TODO: parallelizable?
-// 		// define eq_k = aᵏ eq(x_k1, ..., x_kn, *, ..., *) where x_ki are the evaluation points
-// 		newEq[0].Set(aI)
-// 		sumcheck.EqAcc(c.engine, c.eq, newEq, sumcheck.ReferenceBigIntSlice(c.evaluationPoints[k]))
-// 		if k+1 < claimsNum {
-// 			aI.Mul(aI, combinationCoeff)
-// 		}
-// 	}
-
-// 	// from this point on the claim is a rather simple one: g = E(h) × R_v (P_u0(h), ...) where E and the P_u are multilinear and R_v is of low-degree
-// 	return c.computeGJ()
-// }
-
-// func (c *eqTimesGateEvalSumcheckClaims) ProverFinalEval(r []*big.Int) sumcheck.NativeEvaluationProof {
-
-// 	//defer the proof, return list of claims
-// 	evaluations := make([]big.Int, 0, len(c.wire.Inputs))
-// 	noMoreClaimsAllowed := make(map[*Wire]struct{}, len(c.inputPreprocessors))
-// 	noMoreClaimsAllowed[c.wire] = struct{}{}
-
-// 	for inI, in := range c.wire.Inputs {
-// 		puI := c.inputPreprocessors[inI]
-// 		if _, found := noMoreClaimsAllowed[in]; !found {
-// 			noMoreClaimsAllowed[in] = struct{}{}
-// 			sumcheck.Fold(c.engine, puI, r[len(r)-1])
-// 			puI0 := new(big.Int).Set(puI[0])
-// 			c.manager.add(in, sumcheck.DereferenceBigIntSlice(r), *puI0)
-// 			evaluations = append(evaluations, *puI0)
-// 		}
-// 	}
-
-// 	return evaluations
-// }
-
 #[derive(Debug, Clone)]
 struct ClaimsManager<F: PrimeField + Hash> {
     claims_map: HashMap<Wire<F>, EqTimesGateEvalSumcheckLazyClaims<F>>,
@@ -454,13 +431,14 @@ impl<F: PrimeField + Hash> ClaimsManager<F> {
             assignment: assignment.clone(),
             claims_map: HashMap::with_capacity(c.len()),
         };
-
+        let num_vars = assignment[&c[0]].num_vars;
+        let domain = assignment[&c[0]].domain.clone();
         for wire in c {
             claims.claims_map.insert(wire.clone(), EqTimesGateEvalSumcheckLazyClaims {
                 wire: wire.clone(),
-                domain: Vec::new(),
-                evaluation_points: Vec::with_capacity(wire.nb_claims()),
-                claimed_evaluations: vec![F::default(); wire.nb_claims()],
+                domain: domain.clone(),
+                evaluation_points: vec![vec![F::ZERO; num_vars]; wire.nb_claims()],
+                claimed_evaluations: vec![F::ZERO; wire.nb_claims()],
                 manager: claims.clone(),
             });
         }
@@ -470,8 +448,8 @@ impl<F: PrimeField + Hash> ClaimsManager<F> {
     fn add(&mut self, wire: &Wire<F>, evaluation_point: &[F], evaluation: F) {
         let claim = self.claims_map.get_mut(wire).unwrap();
         let i = claim.evaluation_points.len();
-        claim.claimed_evaluations[i] = evaluation;
-        claim.evaluation_points.push(evaluation_point.to_vec());
+        claim.claimed_evaluations[i - 1] = evaluation; // todo check this, gnark code assumes evaluation_points starts from 0 length
+        claim.evaluation_points[i - 1] = evaluation_point.to_vec();
     }
 
     fn get_lazy_claim(&mut self, wire: &Wire<F>) -> &mut EqTimesGateEvalSumcheckLazyClaims<F> {
@@ -511,20 +489,27 @@ impl<F: PrimeField + Hash> ClaimsManager<F> {
 pub fn gkr_prove<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: &WireAssignment<F>, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<Proof<F>, Error> {
 	let mut claims = ClaimsManager::new(&c, assignment);
 	let mut proof = vec![SumCheckProof::<F>::new(); c.len()];
+    let domain = assignment[&c[0]].domain.clone();
+    let input_values = domain[0].iter()
+    .cartesian_product(domain[1].iter())
+    .map(|(x, y)| vec![*x, *y])
+    .collect_vec();
     let num_vars = assignment[&c[0]].num_vars; //num_vars should be the same for all wires
 	let first_challenge = transcript.squeeze_challenges(num_vars);
 
 	for i in (0..c.len()).rev() {
-		let wire = c[i].clone();
+		let wire = c[i].clone();    
 		if wire.is_output() {
-			claims.add(&wire, &first_challenge, assignment[&wire].evaluate(&first_challenge))
+            let inputs = input_values.iter().map(|d| wire.inputs.iter().map(|input| assignment[input].evaluate(d)).collect_vec()).collect_vec();
+            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input)).sum();
+			claims.add(&wire, &first_challenge, evaluation)
 		}
 
-		let claim = claims.get_claim(&wire);
+        let claim = claims.get_claim(&wire);
 		if wire.no_proof() { // input wires with one claim only
 			proof[i] = SumCheckProof::<F>::new();
 		} else {
-            sumcheck_prove(claim, transcript)?;
+            proof[i] = sumcheck_prove(claim, transcript)?;
 		}
 		// the verifier checks a single claim about input wires itself
 		claims.delete_claim(wire);
@@ -537,13 +522,20 @@ pub fn gkr_prove<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: &WireAssign
 // Unlike in Prove, the assignment argument need not be complete
 fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment<F>, transcript: &mut impl FieldTranscriptRead<F>, proof: &Proof<F>) -> Result<(), Error> {
 	let mut claims = ClaimsManager::new(&c, &assignment);
+    let domain = assignment[&c[0]].domain.clone();
+    let input_values = domain[0].iter()
+    .cartesian_product(domain[1].iter())
+    .map(|(x, y)| vec![*x, *y])
+    .collect_vec();
     let num_vars = assignment[&c[0]].num_vars; //num_vars should be the same for all wires
 	let first_challenge = transcript.squeeze_challenges(num_vars);
 
 	for i in (0..c.len()).rev() {
 		let wire = c[i].clone();
 		if wire.is_output() {
-			claims.add(&wire, &first_challenge, assignment[&wire].evaluate(&first_challenge))
+            let inputs = input_values.iter().map(|d| wire.inputs.iter().map(|input| assignment[input].evaluate(d)).collect_vec()).collect_vec();
+            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input)).sum();
+			claims.add(&wire, &first_challenge, evaluation)
 		}
 
 		let proof_i = &proof[i];
@@ -551,7 +543,7 @@ fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment
 		let claim = claims.get_lazy_claim(&wire);
 		if wire.no_proof() { // input wires with one claim only
 			// make sure the proof is empty
-			if final_eval_proof.is_empty() || proof_i.partial_sum_polys.is_empty() {
+			if !final_eval_proof.is_empty() || !proof_i.partial_sum_polys.is_empty() {
 				return Err(Error::InvalidSumcheck("no proof allowed for input wire with a single claim".to_string()));
 			}
 
@@ -569,12 +561,76 @@ fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment
 }
 
 mod tests {
-    // #[test]
-    // fn test_gkr_prove_and_verify() {
-    //     let c = vec![];
-    //     let assignment = HashMap::new();
-    //     let transcript = vec![];
-    //     let proof = vec![];
-    //     gkr_prove(c, assignment, transcript).unwrap();
-    // }
+    use std::io;
+    use poseidon::Spec;
+    use itertools::Itertools;
+    use std::collections::HashMap;
+
+    use halo2_proofs::{arithmetic::Field, halo2curves::bn256::Fr};
+    use crate::plain::gkr::gkr_verify;
+    use crate::poly::multivariate::{make_subgroup_elements, MultivariatePolynomial};
+    use super::{gkr_prove, AddGate, AnyGate, GKRCircuit, Wire, WireAssignment};
+
+    use crate::util::transcript::InMemoryTranscript;
+	use crate::util::transcript::PoseidonNativeTranscript;
+
+	const T: usize = 4;
+	const RATE: usize = 3;
+	const R_F: usize = 8;
+	const R_P: usize = 56;
+
+    #[test]
+    fn test_gkr_add_gate() {
+
+        let m: usize = 8;
+		let num_vars = 2;
+		let points = make_subgroup_elements::<Fr>(m as u64);
+		let domain = points.chunks(m/num_vars).take(num_vars).map(|chunk| chunk.to_vec()).collect_vec(); 
+		
+		// add gate polynomial with input preprocessors f(P_0(x, y),..,P_n(x, y)) = P_0(x, y) + P_1(x, y) + .. + P_n(x, y)
+		// consider fan in 2 so f(P_0(x, y), P_1(x, y)) = P_0(x, y) + P_1(x, y)
+		// we can model input preprocessors as P_0(x, y) = x*y and P_1(x, y) = x*y^3
+		let p0_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 1)];
+		let p1_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 2)];
+		let mut p1_values = vec![Fr::ZERO; 16];
+		let mut p0_values = vec![Fr::ZERO; 16];
+		for i in 0..4 { // m/num_vars
+			for j in 0..4 {
+			  let fx = domain[0][i];
+			  let fy = domain[1][j];
+			  p0_values[i*4+j] = fx*fy;
+			  p1_values[i*4+j] = fx*fy*fy;
+			}
+		}
+
+		let input_polys = 
+		[
+			MultivariatePolynomial::new(vec![p0_terms.clone()], vec![Fr::ONE], 2, 2, m).unwrap(), 
+			MultivariatePolynomial::new(vec![p1_terms.clone()], vec![Fr::ONE], 2, 3, m).unwrap()
+		];
+        let output_poly = MultivariatePolynomial::new(vec![p0_terms, p1_terms], vec![Fr::ONE, Fr::ONE], 2, 3, m).unwrap();
+
+        let c = {
+            let w1 = Wire::new(AnyGate::new_identity(), vec![], 1, true, false);
+            let w2 = Wire::new(AnyGate::new_identity(), vec![], 1, false, true);
+            vec![w1.clone(), w2.clone(), Wire::new(AnyGate::new_add(), vec![w1, w2], 0, false, false)]
+        };
+
+        let mut assignment = HashMap::new();
+        assignment.insert(c[0].clone(), input_polys[0].clone());
+        assignment.insert(c[1].clone(), input_polys[1].clone());
+        //assignment.insert(c[2].clone(), output_poly.clone());
+
+        let spec = Spec::<Fr, T, RATE>::new(R_F, R_P); 
+		let mut prover_transcript = PoseidonNativeTranscript::<Fr, io::Cursor<Vec<u8>>>::new(spec.clone());
+		// each layer has 4*4 = 16 gates => each variable can have domain size, |H| = 4
+		// degree of each variable is at most, |H| - 1 = 3
+
+        let proof = gkr_prove(c.clone(), &assignment, &mut prover_transcript);
+        assert!(proof.is_ok());
+        let proof_bytes = prover_transcript.into_proof();
+
+        let mut verifier_transcript = PoseidonNativeTranscript::<Fr, io::Cursor<Vec<u8>>>::from_proof(spec, &proof_bytes);
+        gkr_verify(c, assignment, &mut verifier_transcript, &proof.unwrap()).unwrap();
+    }
 }

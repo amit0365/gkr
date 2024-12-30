@@ -2,13 +2,14 @@ use std::hash::Hash;
 use itertools::Itertools;
 use halo2_proofs::{arithmetic::{eval_polynomial, lagrange_interpolate, Field}, halo2curves::ff::PrimeField};
 use crate::{poly::{multivariate::{eq_poly_fix_first_var_univariate, eq_poly_univariate, lagrange_bases, lagrange_pi_eval_verifier, make_subgroup_elements, power_matrix_generator, MultivariatePolynomial}, univariate::{CoefficientBasis, UnivariatePolynomial}}, util::transcript::{FieldTranscriptRead, FieldTranscriptWrite}, Error};
-use super::gkr::AddGate;
+use super::gkr::{AddGate, AnyGate};
+use crate::plain::gkr::GateInstructions;
 
 // Claims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
 pub trait Claims<F: Field> {
 	fn combine_and_first_poly(&mut self, domain: &[&[F]], a: F) -> Vec<F>;        // Combine into the 0ᵗʰ sumcheck subclaim. Create g := ∑_{1≤j≤m} aʲ⁻¹fⱼ for which now we seek to prove ∑_{0≤i<2ⁿ} g(i) = c := ∑_{1≤j≤m} aʲ⁻¹cⱼ. Return g₁.
-	fn next(&mut self, domain: &[&[F]], element: F) -> Vec<F>;          // Return the evaluations gⱼ(k) for 1 ≤ k < degⱼ(g). Update the claim to gⱼ₊₁ for the input value as rⱼ
+	fn next(&mut self, domain: &[&[F]], element: F, var_idx: usize) -> Vec<F>;          // Return the evaluations gⱼ(k) for 1 ≤ k < degⱼ(g). Update the claim to gⱼ₊₁ for the input value as rⱼ
 	fn vars_num(&self) -> usize;                	// number of variables
 	fn degree(&self) -> usize;                 		// degree of the j'th claim
 	fn claims_num(&self) -> usize;            		// number of claims
@@ -16,7 +17,8 @@ pub trait Claims<F: Field> {
 	fn full_domain(&self) -> Vec<F>;				// full domain of the polynomial, for all x in H
 	fn claimed_sum(&self) -> F;
 	fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>>;
-	fn gate(&self) -> AddGate<F>;
+	fn eq(&self) -> Vec<Vec<F>>;
+	fn gate(&self) -> AnyGate<F>;
 	fn prove_final_eval(&self, r: &[F]) -> Vec<F>;  // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
@@ -30,7 +32,7 @@ pub trait LazyClaims<F: Field> {
 	fn domain(&self) -> Vec<Vec<F>>;        // domain of the polynomial wrt each variable
 	fn full_domain(&self) -> Vec<F>;				// full domain of the polynomial, for all x in H
 	fn input_preprocessors(&self) -> Vec<MultivariatePolynomial<F, CoefficientBasis>>;
-	fn gate(&self) -> AddGate<F>;
+	fn gate(&self) -> AnyGate<F>;
 	fn verify_final_eval(&mut self, r: &[F], combination_coeff: F, purported_value: F, proof: &[F]) -> Result<(), Error>;
 }
 
@@ -76,7 +78,7 @@ pub fn sumcheck_prove<F: PrimeField + Hash>(
 	for (j, challenge) in challenges.iter_mut().enumerate() {
 		transcript.write_field_elements(&proof.partial_sum_polys[j])?;
 		*challenge = transcript.squeeze_challenge();
-		proof.partial_sum_polys[j+1] = claims.next(&domain, *challenge);
+		proof.partial_sum_polys[j+1] = claims.next(&domain, *challenge, j + 2);
 	}
 	transcript.write_field_elements(&proof.partial_sum_polys[vars_num-1])?;
 	challenges.push(transcript.squeeze_challenge()); // last challenge
@@ -90,7 +92,7 @@ pub fn sumcheck_prove<F: PrimeField + Hash>(
 	// start pi_eval
 	// prover computes lagrange_bases and power vector for each variable
 	for (j, challenge) in challenges.iter().enumerate() {
-		let lagrange_bases = lagrange_bases::<F>(&[&full_domain[j]], &[*challenge]); // todo check this shouldnt this be all of domain?
+		let lagrange_bases = lagrange_bases::<F>(&[&full_domain[j]], &[*challenge],); 
 		assert_eq!(lagrange_bases[0].len(), m);
 		let power_vector = power_matrix_generator(&[*challenge], m as u64);
 		assert_eq!(power_vector[0].len(), ((64 - (m).leading_zeros() - 1) + 1) as usize); // length k*(logm + 1), k = 1 for bivariate sumcheck. can optimize this to k*logm
@@ -170,26 +172,28 @@ pub struct SingleClaim<F: PrimeField> {
 	claimed_sum: F,
 	evaluation_points: Vec<Vec<F>>, // evaluation points for each claim with respect to each variable as the inner vector
 	domain: Vec<Vec<F>>,
-	gate: AddGate<F>,
+	gate: AnyGate<F>,
 }
 
-impl<F: PrimeField> SingleClaim<F> {
+impl<F: PrimeField + Hash> SingleClaim<F> {
     pub fn compute_gj(&self, 
 		input_preprocessors: Vec<UnivariatePolynomial<F, CoefficientBasis>>, 
-		eq_evals_univariate: Vec<F>
+		eq_evals_univariate: Vec<F>,
+		eq_acc: Vec<Vec<F>>,
+		var_idx: usize
 	) -> Vec<F> { // can use fft here
-		let full_domain = self.domain.iter().flatten().cloned().collect_vec();
-		full_domain.iter()
+		self.full_domain()
+		.iter()
 		.zip(&eq_evals_univariate)
-		.map(|(p, eq)| self.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec())) //*eq * 
-		.collect()
+		.map(|(p, eq)| self.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec()))
+		.collect_vec()
     }
 
 	pub fn new(
 		input_preprocessors: Vec<MultivariatePolynomial<F, CoefficientBasis>>, 
 		evaluation_points: Vec<Vec<F>>, 
 		domain: Vec<Vec<F>>, 
-		gate: AddGate<F>,
+		gate: AnyGate<F>,
 		claimed_sum: F
 	) -> Self {
 		SingleClaim {
@@ -205,6 +209,10 @@ impl<F: PrimeField> SingleClaim<F> {
 }
 
 impl<F: PrimeField + Hash> Claims<F> for SingleClaim<F> {
+	fn eq(&self) -> Vec<Vec<F>> {
+		self.eq.clone()
+	}
+
 	fn claimed_sum(&self) -> F {
 		self.claimed_sum
 	}
@@ -213,7 +221,7 @@ impl<F: PrimeField + Hash> Claims<F> for SingleClaim<F> {
 		self.input_preprocessors.clone()
 	}
 
-	fn gate(&self) -> AddGate<F> {
+	fn gate(&self) -> AnyGate<F> {
 		self.gate.clone()
 	}
 
@@ -248,7 +256,6 @@ impl<F: PrimeField + Hash> Claims<F> for SingleClaim<F> {
 		// Batching subprotocol for GKR, section 6.3 in paper
 		// initialize the eq tables where lagrange bases are evaluations for all x in H at a_k
 		let eq = lagrange_bases(&full_domain_vec, &self.evaluation_points[0]);
-		println!("eq before {:?}", eq);
 		assert_eq!(eq.len(), eq_length);
 		assert_eq!(eq[0].len(), full_domain.len());
         let eq_acc = (1..claims_num).fold(eq, |mut acc, k| {
@@ -265,17 +272,16 @@ impl<F: PrimeField + Hash> Claims<F> for SingleClaim<F> {
             input_preprocessors.push(preprocessor.univariate_poly_first_summed(domain));
         }
 		let eq_evals_univariate = eq_poly_univariate(&eq_acc); 
-		println!("eq_evals_univariate {:?}", eq_evals_univariate);
-        self.compute_gj(input_preprocessors, eq_evals_univariate)
+        self.compute_gj(input_preprocessors, eq_evals_univariate, eq_acc, 1) // summing over the second variable
 	}
 
-	fn next(&mut self, domain: &[&[F]], element: F) -> Vec<F> {
+	fn next(&mut self, domain: &[&[F]], element: F, var_idx: usize) -> Vec<F> {
 		let mut input_preprocessors = Vec::new();
         for preprocessor in &mut self.input_preprocessors {
             input_preprocessors.push(preprocessor.univariate_poly_fix_var(domain, &element));
         }
-        let eq = eq_poly_fix_first_var_univariate(&self.full_domain(), &self.eq, &element); // domain for second variable
-        self.compute_gj(input_preprocessors, eq)
+        let eq = eq_poly_fix_first_var_univariate(&self.full_domain(), &self.eq, &element); 
+        self.compute_gj(input_preprocessors, eq, self.eq.clone(), var_idx) 
 	}
 
 	fn degree(&self) -> usize {
@@ -285,7 +291,7 @@ impl<F: PrimeField + Hash> Claims<F> for SingleClaim<F> {
 }
 
 pub struct SingleClaimLazyClaim<F: PrimeField> {
-	gate: AddGate<F>,
+	gate: AnyGate<F>,
 	input_preprocessors: Vec<MultivariatePolynomial<F, CoefficientBasis>>,
 	claims_num: usize,
 	vars_num: usize,
@@ -317,7 +323,7 @@ impl<F: PrimeField + Hash> LazyClaims<F> for SingleClaimLazyClaim<F> {
 		self.input_preprocessors.clone()
 	}
 
-	fn gate(&self) -> AddGate<F> {
+	fn gate(&self) -> AnyGate<F> {
 		self.gate.clone()
 	}
 
@@ -364,6 +370,7 @@ mod tests {
 	use std::io;
 	use std::io::Cursor;
 	use super::*;
+	use ethereum_types::U256;
 	use poseidon::Spec;
 	use halo2_proofs::halo2curves::bn256::Fr;
 	use crate::plain::gkr::EqTimesGateEvalSumcheckLazyClaims;
@@ -405,7 +412,7 @@ mod tests {
 		let input_preprocessors = vec![MultivariatePolynomial::new(vec![p0_terms], vec![Fr::ONE], 2, 2, m).unwrap()];
 		// evaluate the gate polynomial at Fr(5) for the first variable and Fr(9) for the second variable
 		let evaluation_points = vec![vec![Fr::from(5), Fr::from(9)]];
-		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AddGate::new(), claimed_sum);
+		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AnyGate::new_identity(), claimed_sum);
 		let proof = sumcheck_prove(claims.clone(), &mut prover_transcript);
 		assert!(proof.is_ok());
 
@@ -429,7 +436,7 @@ mod tests {
 		
 		// add gate polynomial with input preprocessors f(P_0(x, y),..,P_n(x, y)) = P_0(x, y) + P_1(x, y) + .. + P_n(x, y)
 		// consider fan in 2 so f(P_0(x, y), P_1(x, y)) = P_0(x, y) + P_1(x, y)
-		// we can model input preprocessors as P_0(x, y) = x*y and P_1(x, y) = x*y^3
+		// we can model input preprocessors as P_0(x, y) = x*y and P_1(x, y) = x*y^2
 		let p0_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 1)];
 		let p1_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 2)];
 		let mut p1_values = vec![Fr::ZERO; m*m];
@@ -451,7 +458,7 @@ mod tests {
 		let claimed_sum = p0_values.iter().sum::<Fr>() + p1_values.iter().sum::<Fr>();
 		//evaluate the gate polynomial at Fr(5) for the first variable and Fr(9) for the second variable
 		let evaluation_points = vec![vec![Fr::from(5), Fr::from(9)]];
-		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AddGate::new(), claimed_sum);
+		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AnyGate::new_add(), claimed_sum);
 		let proof = sumcheck_prove(claims.clone(), &mut prover_transcript);
 		assert!(proof.is_ok());
 		let proof_bytes = prover_transcript.into_proof();
