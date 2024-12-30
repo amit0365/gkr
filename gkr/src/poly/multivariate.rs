@@ -682,8 +682,8 @@ mod tests {
   #[test]
   fn test_sparse_term() {
     let term = SparseTerm::<Fr>::new(vec![(0, 4), (1, 3)], 2, 7);
-    assert_eq!(term.degree_of_var(0), 3);
-    assert_eq!(term.degree_of_var(1), 4);
+    assert_eq!(term.degree_of_var(0), 4);
+    assert_eq!(term.degree_of_var(1), 3);
   }
 
   #[test]
@@ -693,7 +693,7 @@ mod tests {
     assert_eq!(coeff, Fr::from(16));
     assert_eq!(term.degree(), 3);
     assert_eq!(term.terms.len(), 1);
-    assert_eq!(term.terms[0], (1, 3));
+    assert_eq!(term.terms[0], (0, 3));
   }
 
   #[test]
@@ -729,21 +729,21 @@ mod tests {
 
   #[test]
   fn test_univariate_poly_first_summed_deg1() {
-    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 4, 16).unwrap();
     let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
     let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
     let univariate_poly = multivariate_poly.univariate_poly_first_summed(&domain);
-    assert_eq!(univariate_poly.degree(), 4);
+    assert_eq!(univariate_poly.degree(), 1);
     assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
   }
 
   #[test]
   fn test_univariate_poly_fix_var_deg1() {
-    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 15, 16).unwrap();
+    let mut multivariate_poly = MultivariatePolynomial::new(vec![vec![(0, 1), (1, 1), (2, 1), (3, 1)]], vec![Fr::ONE], 4, 4, 16).unwrap();
     let domain_owned: Vec<Vec<Fr>> = multivariate_poly.domain.clone();
     let domain: Vec<&[Fr]> = domain_owned.iter().map(|v| v.as_slice()).collect();
     let univariate_poly = multivariate_poly.univariate_poly_fix_var(&domain, &Fr::from(2));
-    assert_eq!(univariate_poly.degree(), 3);
+    assert_eq!(univariate_poly.degree(), 1);
     assert_eq!(univariate_poly.coeffs().len(), univariate_poly.degree() + 1);
   }
 
