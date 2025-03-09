@@ -8,9 +8,11 @@ use halo2_proofs::halo2curves::ff::PrimeField;
 
 use crate::poly::multivariate::{eq_poly_fix_first_var_univariate, eq_poly_univariate, lagrange_bases, make_subgroup_elements, MultivariatePolynomial};
 use crate::poly::univariate::{CoefficientBasis, UnivariatePolynomial};
+use crate::util::arithmetic::fe_to_bits_le;
 use crate::util::transcript::{FieldTranscriptRead, FieldTranscriptWrite};
 use crate::Error;
 
+use super::scalar_mul::DblAddSelectGate;
 //pub const M: u64 = 20;
 use super::sumcheck::{sumcheck_prove, sumcheck_verify, Claims, LazyClaims, SumCheckProof};
 
@@ -114,20 +116,66 @@ impl<F: Field> MulGate<F> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum AnyGate<F: Field> {
+pub struct ScalarMulGate<F: Field> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> ScalarMulGate<F> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, inputs: &[F], index: Option<usize>) -> F {
+        let mut inputs = inputs.to_vec();
+        let scalar = inputs.last().unwrap();
+        let scalar_bits = fe_to_bits_le(scalar.clone());
+        for i in 0..scalar_bits.len() {
+            let outputs = DblAddSelectGate::new().evaluate_full(&[inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], scalar_bits[i]]);
+            inputs = outputs[..6].to_vec();
+        };
+        if let Some(index) = index {
+            inputs[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    pub fn degree(&self) -> usize {
+        1
+    }
+
+    pub fn nb_inputs(&self) -> usize {
+        2
+    }
+
+    pub fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "scalar_mul".to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AnyGate<F: PrimeField> {
     Add(AddGate<F>),
     Identity(IdentityGate<F>),
     Mul(MulGate<F>),
-    // Other gate variants
+    DblAdd(DblAddSelectGate<F>),
+    ScalarMul(ScalarMulGate<F>),
 }
 
-impl<F: Field> GateInstructions<F> for AnyGate<F> {
-    fn evaluate(&self, inputs: &[F]) -> F {
+impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
+    fn evaluate(&self, inputs: &[F], index: Option<usize>) -> F {
         match self {
             AnyGate::Add(gate) => gate.evaluate(inputs),
             AnyGate::Identity(gate) => gate.evaluate(inputs),
             AnyGate::Mul(gate) => gate.evaluate(inputs),
-            // Other variants
+            AnyGate::DblAdd(gate) => gate.evaluate(inputs, index),
+            AnyGate::ScalarMul(gate) => gate.evaluate(inputs, index),
         }
     }
 
@@ -136,7 +184,8 @@ impl<F: Field> GateInstructions<F> for AnyGate<F> {
             AnyGate::Add(gate) => gate.degree(),
             AnyGate::Identity(gate) => gate.degree(),
             AnyGate::Mul(gate) => gate.degree(),
-            // Other variants
+            AnyGate::DblAdd(gate) => gate.degree(),
+            AnyGate::ScalarMul(gate) => gate.degree(),
         }
     }   
 
@@ -145,7 +194,8 @@ impl<F: Field> GateInstructions<F> for AnyGate<F> {
             AnyGate::Add(gate) => gate.nb_inputs(),
             AnyGate::Identity(gate) => gate.nb_inputs(),
             AnyGate::Mul(gate) => gate.nb_inputs(),
-            // Other variants
+            AnyGate::DblAdd(gate) => gate.nb_inputs(),
+            AnyGate::ScalarMul(gate) => gate.nb_inputs(),
         }
     }
 
@@ -154,7 +204,8 @@ impl<F: Field> GateInstructions<F> for AnyGate<F> {
             AnyGate::Add(gate) => gate.nb_outputs(),
             AnyGate::Identity(gate) => gate.nb_outputs(),
             AnyGate::Mul(gate) => gate.nb_outputs(),
-            // Other variants
+            AnyGate::DblAdd(gate) => gate.nb_outputs(),
+            AnyGate::ScalarMul(gate) => gate.nb_outputs(),
         }
     }
 
@@ -163,12 +214,13 @@ impl<F: Field> GateInstructions<F> for AnyGate<F> {
             AnyGate::Add(gate) => gate.name(),
             AnyGate::Identity(gate) => gate.name(),
             AnyGate::Mul(gate) => gate.name(),
-            // Other variants
+            AnyGate::DblAdd(gate) => gate.name(),
+            AnyGate::ScalarMul(gate) => gate.name(),
         }
     }
 }
 
-impl<F: Field> AnyGate<F> {
+impl<F: PrimeField> AnyGate<F> {
     pub fn new_add() -> Self {
         Self::Add(AddGate::new())
     }
@@ -180,10 +232,18 @@ impl<F: Field> AnyGate<F> {
     pub fn new_mul() -> Self {
         Self::Mul(MulGate::new())
     }
+
+    pub fn new_dbl_add() -> Self {
+        Self::DblAdd(DblAddSelectGate::new())
+    }
+
+    pub fn new_scalar_mul() -> Self {
+        Self::ScalarMul(ScalarMulGate::new())
+    }
 }
 
-pub trait GateInstructions<F: Field> {
-    fn evaluate(&self, input: &[F]) -> F;
+pub trait GateInstructions<F: PrimeField> {
+    fn evaluate(&self, input: &[F], index: Option<usize>) -> F;
     fn degree(&self) -> usize;
     fn nb_inputs(&self) -> usize;
     fn nb_outputs(&self) -> usize;
@@ -191,25 +251,21 @@ pub trait GateInstructions<F: Field> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Wire<F: Field + Hash> {
+pub struct Wire<F: PrimeField + Hash> {
     gate: AnyGate<F>,
     inputs: Vec<Wire<F>>,
     nb_unique_outputs: usize,
-    is_input_left: bool,
-    is_input_right: bool,
     _marker: PhantomData<F>,
 }
 
 pub type GKRCircuit<F> = Vec<Wire<F>>;
 
-impl<F: Field + Hash> Wire<F> {
-    fn new(gate: AnyGate<F>, inputs: Vec<Wire<F>>, nb_unique_outputs: usize, is_input_left: bool, is_input_right: bool) -> Self {
+impl<F: PrimeField + Hash> Wire<F> {
+    pub fn new(gate: AnyGate<F>, inputs: Vec<Wire<F>>, nb_unique_outputs: usize) -> Self {
         Self {
             gate,
             inputs,
             nb_unique_outputs,
-            is_input_left,
-            is_input_right,
             _marker: PhantomData,
         }
     }
@@ -252,7 +308,7 @@ impl<F: Field + Hash> Wire<F> {
 }
 
 // WireAssignment is assignment of values to the same wire across many instances of the circuit
-type WireAssignment<F> = HashMap<Wire<F>, MultivariatePolynomial<F, CoefficientBasis>>;
+pub type WireAssignment<F> = HashMap<Wire<F>, MultivariatePolynomial<F, CoefficientBasis>>;
 
 pub type Proof<F> = Vec<SumCheckProof<F>>; // for each layer, for each wire, a sumcheck (for each variable, a polynomial)
 
@@ -317,7 +373,8 @@ struct EqTimesGateEvalSumcheckClaims<F: PrimeField + Hash> {
 	claimed_evaluations: Vec<F>,   // y in the paper
     domain:              Vec<Vec<F>>, // same domain for all claims
 	manager:             ClaimsManager<F>,
-    /// We denote input_preprocessors, P_i(x, y) as a multivariate polynomial  
+    /// We denote input_preprocessors, P_i(x, y) as a multivariate polynomial 
+    /// which represents all the ith input to the gate across the data parallel circuits  
     /// s.t. deg of sum_check_poly f'(P_0(x, y), ..., P_k(x, y)) in each variable <= |H| - 1
     /// while the overall degree should be low s.t.  d/|F| << 1
 	input_preprocessors: Vec<MultivariatePolynomial<F, CoefficientBasis>>, 
@@ -332,7 +389,7 @@ impl<F: PrimeField + Hash> EqTimesGateEvalSumcheckClaims<F> {
 		let full_domain = self.domain.iter().flatten().cloned().collect_vec();
 		full_domain.iter()
 		.zip(&eq_evals_univariate)
-		.map(|(p, eq)| self.gate().evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec())) //*eq * 
+		.map(|(p, eq)| self.gate().evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec(), None)) //*eq * 
 		.collect()
     }
 }
@@ -491,9 +548,9 @@ pub fn gkr_prove<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: &WireAssign
 	let mut proof = vec![SumCheckProof::<F>::new(); c.len()];
     let domain = assignment[&c[0]].domain.clone();
     let input_values = domain[0].iter()
-    .cartesian_product(domain[1].iter())
-    .map(|(x, y)| vec![*x, *y])
-    .collect_vec();
+        .cartesian_product(domain[1].iter())
+        .map(|(x, y)| vec![*x, *y])
+        .collect_vec();
     let num_vars = assignment[&c[0]].num_vars; //num_vars should be the same for all wires
 	let first_challenge = transcript.squeeze_challenges(num_vars);
 
@@ -501,7 +558,7 @@ pub fn gkr_prove<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: &WireAssign
 		let wire = c[i].clone();    
 		if wire.is_output() {
             let inputs = input_values.iter().map(|d| wire.inputs.iter().map(|input| assignment[input].evaluate(d)).collect_vec()).collect_vec();
-            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input)).sum();
+            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input, None)).sum();
 			claims.add(&wire, &first_challenge, evaluation)
 		}
 
@@ -520,13 +577,13 @@ pub fn gkr_prove<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: &WireAssign
 
 // Verify the consistency of the claimed output with the claimed input
 // Unlike in Prove, the assignment argument need not be complete
-fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment<F>, transcript: &mut impl FieldTranscriptRead<F>, proof: &Proof<F>) -> Result<(), Error> {
+pub fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment<F>, transcript: &mut impl FieldTranscriptRead<F>, proof: &Proof<F>) -> Result<(), Error> {
 	let mut claims = ClaimsManager::new(&c, &assignment);
     let domain = assignment[&c[0]].domain.clone();
     let input_values = domain[0].iter()
-    .cartesian_product(domain[1].iter())
-    .map(|(x, y)| vec![*x, *y])
-    .collect_vec();
+        .cartesian_product(domain[1].iter())
+        .map(|(x, y)| vec![*x, *y])
+        .collect_vec();
     let num_vars = assignment[&c[0]].num_vars; //num_vars should be the same for all wires
 	let first_challenge = transcript.squeeze_challenges(num_vars);
 
@@ -534,7 +591,7 @@ fn gkr_verify<F: PrimeField + Hash>(c: GKRCircuit<F>, assignment: WireAssignment
 		let wire = c[i].clone();
 		if wire.is_output() {
             let inputs = input_values.iter().map(|d| wire.inputs.iter().map(|input| assignment[input].evaluate(d)).collect_vec()).collect_vec();
-            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input)).sum();
+            let evaluation = inputs.iter().map(|input| wire.gate.evaluate(input, None)).sum();
 			claims.add(&wire, &first_challenge, evaluation)
 		}
 
@@ -565,11 +622,11 @@ mod tests {
     use poseidon::Spec;
     use itertools::Itertools;
     use std::collections::HashMap;
+    use crate::plain::gkr::gkr_verify;
 
     use halo2_proofs::{arithmetic::Field, halo2curves::bn256::Fr};
-    use crate::plain::gkr::gkr_verify;
-    use crate::poly::multivariate::{make_subgroup_elements, MultivariatePolynomial};
     use super::{gkr_prove, AddGate, AnyGate, GKRCircuit, Wire, WireAssignment};
+    use crate::poly::multivariate::{make_subgroup_elements, MultivariatePolynomial};
 
     use crate::util::transcript::InMemoryTranscript;
 	use crate::util::transcript::PoseidonNativeTranscript;
@@ -594,12 +651,14 @@ mod tests {
 		let p1_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 2)];
 		let mut p1_values = vec![Fr::ZERO; 16];
 		let mut p0_values = vec![Fr::ZERO; 16];
+        let mut sum = vec![Fr::ZERO; 16];
 		for i in 0..4 { // m/num_vars
 			for j in 0..4 {
 			  let fx = domain[0][i];
 			  let fy = domain[1][j];
 			  p0_values[i*4+j] = fx*fy;
 			  p1_values[i*4+j] = fx*fy*fy;
+              sum[i*4+j] = p0_values[i*4+j] + p1_values[i*4+j]; 
 			}
 		}
 
@@ -611,15 +670,14 @@ mod tests {
         let output_poly = MultivariatePolynomial::new(vec![p0_terms, p1_terms], vec![Fr::ONE, Fr::ONE], 2, 3, m).unwrap();
 
         let c = {
-            let w1 = Wire::new(AnyGate::new_identity(), vec![], 1, true, false);
-            let w2 = Wire::new(AnyGate::new_identity(), vec![], 1, false, true);
-            vec![w1.clone(), w2.clone(), Wire::new(AnyGate::new_add(), vec![w1, w2], 0, false, false)]
+            let w1 = Wire::new(AnyGate::new_identity(), vec![], 1);
+            let w2 = Wire::new(AnyGate::new_identity(), vec![], 1);
+            vec![w1.clone(), w2.clone(), Wire::new(AnyGate::new_add(), vec![w1, w2], 6)]
         };
 
         let mut assignment = HashMap::new();
         assignment.insert(c[0].clone(), input_polys[0].clone());
         assignment.insert(c[1].clone(), input_polys[1].clone());
-        //assignment.insert(c[2].clone(), output_poly.clone());
 
         let spec = Spec::<Fr, T, RATE>::new(R_F, R_P); 
 		let mut prover_transcript = PoseidonNativeTranscript::<Fr, io::Cursor<Vec<u8>>>::new(spec.clone());

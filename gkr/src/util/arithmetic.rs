@@ -340,6 +340,12 @@ pub fn add_aff_unequal<F: PrimeField+FieldUtils>(pt1: (F, F), pt2: (F, F)) -> (F
     (v3, u3)
 }
 
+pub fn from_be_bytes_mod_order<F: PrimeField>(bytes: &[u8]) -> F {
+    let mut bytes_copy = bytes.to_vec();
+    bytes_copy.reverse();
+    fe_mod_from_le_bytes(&bytes_copy)
+}
+
 /// Incomplete Doubling in projective coordinates.
 pub fn double_proj<F: PrimeField+FieldUtils>(pt: ProjectivePoint<F>) -> ProjectivePoint<F> {
     let x = pt.x;

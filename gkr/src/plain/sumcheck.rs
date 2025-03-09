@@ -7,7 +7,7 @@ use crate::plain::gkr::GateInstructions;
 
 // Claims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
-pub trait Claims<F: Field> {
+pub trait Claims<F: PrimeField> {
 	fn combine_and_first_poly(&mut self, domain: &[&[F]], a: F) -> Vec<F>;        // Combine into the 0ᵗʰ sumcheck subclaim. Create g := ∑_{1≤j≤m} aʲ⁻¹fⱼ for which now we seek to prove ∑_{0≤i<2ⁿ} g(i) = c := ∑_{1≤j≤m} aʲ⁻¹cⱼ. Return g₁.
 	fn next(&mut self, domain: &[&[F]], element: F, var_idx: usize) -> Vec<F>;          // Return the evaluations gⱼ(k) for 1 ≤ k < degⱼ(g). Update the claim to gⱼ₊₁ for the input value as rⱼ
 	fn vars_num(&self) -> usize;                	// number of variables
@@ -23,7 +23,7 @@ pub trait Claims<F: Field> {
 }
 
 // LazyClaims is the Claims data structure on the verifier side. It is "lazy" in that it has to compute fewer things.
-pub trait LazyClaims<F: Field> {
+pub trait LazyClaims<F: PrimeField> {
 	fn claimed_sum(&self) -> F;
 	fn claims_num(&self) -> usize;
 	fn vars_num(&self) -> usize;
@@ -142,6 +142,7 @@ pub fn sumcheck_verify<F: PrimeField + Hash>(
 	let mut evaluations = vec![F::ZERO; vars_num + 1];
 	evaluations[0] = claims.claimed_sum(); // T
 	for j in 0..vars_num {
+		println!("j: {:?}", j);
 		// partitioning the g[j], round_poly_evaluation into vars_num partitions and summing them up, i.e. G_1, G_2 in paper
 		let sum = claims.combined_sum(&g[j], j);
 		assert_eq!(evaluations[j], sum); // jth check, so total 2 checks for bivariate sumcheck
@@ -155,7 +156,7 @@ pub fn sumcheck_verify<F: PrimeField + Hash>(
 
 	assert_eq!(t_star, *evaluations.last().unwrap()); //third check
 	let input_evals = claims.input_preprocessors().iter().map(|prep| prep.evaluate(&challenges)).collect_vec();
-	let gate_eval = claims.gate().evaluate(&input_evals);
+	let gate_eval = claims.gate().evaluate(&input_evals, None);
 	assert_eq!(t_star, gate_eval); //fourth check
 
 	// can defer evaluating gate at challenges to the prover, if costly for the fourth and last check
@@ -185,7 +186,7 @@ impl<F: PrimeField + Hash> SingleClaim<F> {
 		self.full_domain()
 		.iter()
 		.zip(&eq_evals_univariate)
-		.map(|(p, eq)| self.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec()))
+		.map(|(p, eq)| *eq * self.gate.evaluate(&input_preprocessors.iter().map(|prep| prep.evaluate(p)).collect_vec(), None))
 		.collect_vec()
     }
 
@@ -390,7 +391,7 @@ mod tests {
 		// each layer has 4*4 = 16 gates => each variable can have domain size, |H| = 4
 		// degree of each variable is at most, |H| - 1 = 3
 
-		let m: usize = 8;
+		let m: usize = 8; // 2 * |H| = num_vars * |H| = total domain size
 		let num_vars = 2;
 		let points = make_subgroup_elements::<Fr>(m as u64);
 		let domain = points.chunks(m/num_vars).take(num_vars).map(|chunk| chunk.to_vec()).collect_vec(); //points.len()/num_vars
@@ -409,7 +410,7 @@ mod tests {
 		}
 
 		let claimed_sum = p0_values.iter().sum::<Fr>();
-		let input_preprocessors = vec![MultivariatePolynomial::new(vec![p0_terms], vec![Fr::ONE], 2, 2, m).unwrap()];
+		let input_preprocessors = vec![MultivariatePolynomial::new(vec![p0_terms], vec![Fr::ONE], 2, 2, m).unwrap()]; //x*y
 		// evaluate the gate polynomial at Fr(5) for the first variable and Fr(9) for the second variable
 		let evaluation_points = vec![vec![Fr::from(5), Fr::from(9)]];
 		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AnyGate::new_identity(), claimed_sum);
@@ -455,7 +456,10 @@ mod tests {
 			MultivariatePolynomial::new(vec![p1_terms], vec![Fr::ONE], 2, 3, m).unwrap()
 		];
 
-		let claimed_sum = p0_values.iter().sum::<Fr>() + p1_values.iter().sum::<Fr>();
+		//let claimed_sum = p0_values.iter().zip(p1_values.iter()).map(|(p0, p1)| p0 + p1).sum::<Fr>();
+		let hex_string = "0x299738d75265c85ca3576bb270931724c44ea6443e22f3638da369e861368db7";
+		let decimal_value = U256::from_str_radix(hex_string, 16).unwrap();
+		let claimed_sum = Fr::from_str_vartime(&decimal_value.to_string()).unwrap();
 		//evaluate the gate polynomial at Fr(5) for the first variable and Fr(9) for the second variable
 		let evaluation_points = vec![vec![Fr::from(5), Fr::from(9)]];
 		let claims = SingleClaim::new(input_preprocessors, evaluation_points, domain, AnyGate::new_add(), claimed_sum);
