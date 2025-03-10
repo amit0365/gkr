@@ -2,6 +2,8 @@ use halo2_proofs::arithmetic::Field;
 use halo2_proofs::halo2curves::ff::PrimeField;
 use std::marker::PhantomData;
 
+use crate::util::arithmetic::fe_to_bits_le;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProjAddGate<F: Field> {
     _marker: PhantomData<F>,
@@ -242,6 +244,51 @@ impl<F: PrimeField> DblAddSelectGate<F> {
         "dbladdselect".to_string()
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScalarMulGate<F: Field> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> ScalarMulGate<F> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, inputs: &[F], index: Option<usize>) -> F {
+        let mut inputs = inputs.to_vec();
+        let scalar = inputs.last().unwrap();
+        let scalar_bits = fe_to_bits_le(scalar.clone());
+        for i in 0..scalar_bits.len() {
+            let outputs = DblAddSelectGate::new().evaluate_full(&[inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], scalar_bits[i]]);
+            inputs = outputs[..6].to_vec();
+        };
+        if let Some(index) = index {
+            inputs[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    pub fn degree(&self) -> usize {
+        1
+    }
+
+    pub fn nb_inputs(&self) -> usize {
+        2
+    }
+
+    pub fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    pub fn name(&self) -> String {
+        "scalar_mul".to_string()
+    }
+}
+
 
 #[allow(unused_imports)]
 #[cfg(test)]
