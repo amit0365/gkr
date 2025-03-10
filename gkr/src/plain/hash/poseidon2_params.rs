@@ -2,7 +2,7 @@ use halo2_proofs::halo2curves::ff::PrimeField;
 
 use super::super::utils;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Poseidon2Params<F: PrimeField> {
     pub(crate) t: usize, // statesize
     pub(crate) d: usize, // sbox degree

@@ -12,6 +12,8 @@ use crate::util::arithmetic::fe_to_bits_le;
 use crate::util::transcript::{FieldTranscriptRead, FieldTranscriptWrite};
 use crate::Error;
 
+use super::hash::poseidon2_gkr::Poseidon2T4Gate;
+use super::hash::poseidon2_params::Poseidon2Params;
 use super::scalar_mul::{DblAddSelectGate, ScalarMulGate};
 //pub const M: u64 = 20;
 use super::sumcheck::{sumcheck_prove, sumcheck_verify, Claims, LazyClaims, SumCheckProof};
@@ -122,6 +124,7 @@ pub enum AnyGate<F: PrimeField> {
     Mul(MulGate<F>),
     DblAdd(DblAddSelectGate<F>),
     ScalarMul(ScalarMulGate<F>),
+    Poseidon2T4(Poseidon2T4Gate<F>),
 }
 
 impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
@@ -132,6 +135,7 @@ impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
             AnyGate::Mul(gate) => gate.evaluate(inputs),
             AnyGate::DblAdd(gate) => gate.evaluate(inputs, index),
             AnyGate::ScalarMul(gate) => gate.evaluate(inputs, index),
+            AnyGate::Poseidon2T4(gate) => gate.evaluate(inputs, index),
         }
     }
 
@@ -142,6 +146,7 @@ impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
             AnyGate::Mul(gate) => gate.degree(),
             AnyGate::DblAdd(gate) => gate.degree(),
             AnyGate::ScalarMul(gate) => gate.degree(),
+            AnyGate::Poseidon2T4(gate) => gate.degree(),
         }
     }   
 
@@ -152,6 +157,7 @@ impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
             AnyGate::Mul(gate) => gate.nb_inputs(),
             AnyGate::DblAdd(gate) => gate.nb_inputs(),
             AnyGate::ScalarMul(gate) => gate.nb_inputs(),
+            AnyGate::Poseidon2T4(gate) => gate.nb_inputs(),
         }
     }
 
@@ -162,6 +168,7 @@ impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
             AnyGate::Mul(gate) => gate.nb_outputs(),
             AnyGate::DblAdd(gate) => gate.nb_outputs(),
             AnyGate::ScalarMul(gate) => gate.nb_outputs(),
+            AnyGate::Poseidon2T4(gate) => gate.nb_outputs(),
         }
     }
 
@@ -172,6 +179,7 @@ impl<F: PrimeField> GateInstructions<F> for AnyGate<F> {
             AnyGate::Mul(gate) => gate.name(),
             AnyGate::DblAdd(gate) => gate.name(),
             AnyGate::ScalarMul(gate) => gate.name(),
+            AnyGate::Poseidon2T4(gate) => gate.name(),
         }
     }
 }
@@ -195,6 +203,10 @@ impl<F: PrimeField> AnyGate<F> {
 
     pub fn new_scalar_mul() -> Self {
         Self::ScalarMul(ScalarMulGate::new())
+    }
+
+    pub fn new_poseidon2_t4(params: &Poseidon2Params<F>) -> Self {
+        Self::Poseidon2T4(Poseidon2T4Gate::new(params))
     }
 }
 

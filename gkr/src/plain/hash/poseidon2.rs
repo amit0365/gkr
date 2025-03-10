@@ -1,6 +1,8 @@
 use super::poseidon2_params::Poseidon2Params;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use halo2_proofs::halo2curves::ff::PrimeField;
+use itertools::Itertools;
+
 #[derive(Clone, Debug)]
 pub struct Poseidon2<F: PrimeField> {
     pub(crate) params: Arc<Poseidon2Params<F>>,
@@ -218,6 +220,260 @@ impl<F: PrimeField> Poseidon2<F> {
     }
 }
 
+pub struct Sbox5T4Gate<F: PrimeField> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> Sbox5T4Gate<F> {
+    pub fn new() -> Self {
+        Sbox5T4Gate {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, input: &[F], index: Option<usize>) -> F {
+        if let Some(index) = index {
+            input[index].square().square() * input[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    pub fn evaluate_full(&self, input: &[F]) -> Vec<F> {
+        input.iter().map(|el| el.square().square() * el).collect()
+    }
+    
+    fn degree(&self) -> usize {
+        5
+    }
+
+    fn nb_inputs(&self) -> usize {
+        4   
+    }
+
+    fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "sbox5".to_string()
+    }
+}
+
+pub struct MatmulM4Gate<F: PrimeField> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> MatmulM4Gate<F> {
+    pub fn new() -> Self {
+        MatmulM4Gate {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, input: &[F], index: Option<usize>) -> F {
+        let t = 4;
+        let t4 = t / 4;
+        let mut input_copy = input.to_vec();
+        for i in 0..t4 {
+            let start_index = i * 4;
+            let mut t_0 = input[start_index];
+            t_0.add_assign(&input[start_index + 1]);
+            let mut t_1 = input[start_index + 2];
+            t_1.add_assign(&input[start_index + 3]);
+            let mut t_2 = input[start_index + 1];
+            t_2.double();
+            t_2.add_assign(&t_1);
+            let mut t_3 = input[start_index + 3];
+            t_3.double();
+            t_3.add_assign(&t_0);
+            let mut t_4 = t_1;
+            t_4.double();
+            t_4.double();
+            t_4.add_assign(&t_3);
+            let mut t_5 = t_0;
+            t_5.double();
+            t_5.double();
+            t_5.add_assign(&t_2);
+            let mut t_6 = t_3;
+            t_6.add_assign(&t_5);
+            let mut t_7 = t_2;
+            t_7.add_assign(&t_4);
+            input_copy[start_index] = t_6;
+            input_copy[start_index + 1] = t_5;
+            input_copy[start_index + 2] = t_7;
+            input_copy[start_index + 3] = t_4;
+        }
+
+        if let Some(index) = index {
+            input_copy[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    pub fn evaluate_full(&self, input: &[F]) -> Vec<F> {
+        let t = 4;
+        let t4 = t / 4;
+        let mut input_copy = input.to_vec();
+        for i in 0..t4 {
+            let start_index = i * 4;
+            let mut t_0 = input[start_index];
+            t_0.add_assign(&input[start_index + 1]);
+            let mut t_1 = input[start_index + 2];
+            t_1.add_assign(&input[start_index + 3]);
+            let mut t_2 = input[start_index + 1];
+            t_2.double();
+            t_2.add_assign(&t_1);
+            let mut t_3 = input[start_index + 3];
+            t_3.double();
+            t_3.add_assign(&t_0);
+            let mut t_4 = t_1;
+            t_4.double();
+            t_4.double();
+            t_4.add_assign(&t_3);
+            let mut t_5 = t_0;
+            t_5.double();
+            t_5.double();
+            t_5.add_assign(&t_2);
+            let mut t_6 = t_3;
+            t_6.add_assign(&t_5);
+            let mut t_7 = t_2;
+            t_7.add_assign(&t_4);
+            input_copy[start_index] = t_6;
+            input_copy[start_index + 1] = t_5;
+            input_copy[start_index + 2] = t_7;
+            input_copy[start_index + 3] = t_4;
+        }
+        input_copy
+    }
+
+    fn degree(&self) -> usize {
+        1
+    }
+
+    fn nb_inputs(&self) -> usize {
+        4
+    }
+
+    fn nb_outputs(&self) -> usize {
+        4
+    }
+
+    fn name(&self) -> String {
+        "matmul_m4".to_string()
+    }
+}
+
+pub struct MatmulInternalGate<F: PrimeField> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> MatmulInternalGate<F> {
+    pub fn new() -> Self {
+        MatmulInternalGate {
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn evaluate(&self, input: &[F], mat_internal_diag_m_1: &[F], index: Option<usize>) -> F {
+        let mut input_copy = input.to_vec();
+        let t = 4;
+            // Compute input sum
+            let mut sum = input[0];
+            input
+                .iter()
+                .skip(1)
+                .take(t-1)
+                .for_each(|el| sum.add_assign(el));
+            // Add sum + diag entry * element to each element
+        for i in 0..input.len() {
+            input_copy[i].mul_assign(&mat_internal_diag_m_1[i]);
+            input_copy[i].add_assign(&sum);
+        }
+
+        if let Some(index) = index {
+            input_copy[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    fn degree(&self) -> usize {
+        1
+    }
+
+    fn nb_inputs(&self) -> usize {
+        4
+    }
+
+    fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "matmul_internal".to_string()
+    }
+}
+
+pub struct AddRcGate<F: PrimeField> {
+    rc: Vec<F>,
+}
+
+impl<F: PrimeField> AddRcGate<F> {
+    pub fn new(rc: Vec<F>) -> Self {
+        AddRcGate {
+            rc,
+        }
+    }
+
+    pub fn evaluate(&self, input: &[F], index: Option<usize>) -> F {
+        let output = input
+            .iter()
+            .zip(self.rc.iter())
+            .map(|(a, b)| {
+                let mut r = *a;
+                r.add_assign(b);
+                r
+            })
+            .collect_vec();
+
+        if let Some(index) = index {
+            output[index]
+        } else {
+            panic!("index is not set");
+        }
+    }
+
+    pub fn evaluate_full(&self, input: &[F]) -> Vec<F> {
+        input
+            .iter()
+            .zip(self.rc.iter())
+            .map(|(a, b)| {
+                let mut r = *a;
+                r.add_assign(b);
+                r
+            })
+            .collect_vec()
+    }
+
+    fn degree(&self) -> usize {
+        1
+    }
+
+    fn nb_inputs(&self) -> usize {
+        4
+    }
+
+    fn nb_outputs(&self) -> usize {
+        1
+    }
+
+    fn name(&self) -> String {
+        "add_rc".to_string()
+    }
+}
+
 #[allow(unused_imports)]
 #[cfg(test)]
 mod poseidon2_tests_bn256 {
@@ -225,7 +481,7 @@ mod poseidon2_tests_bn256 {
     use halo2_proofs::halo2curves::ff::Field;
     use rand::thread_rng;
     use super::super::super::utils::from_hex;
-    use super::super::poseidon2_instance_bn256::POSEIDON2_BN256_PARAMS;
+    use super::super::poseidon2_instance_bn256::POSEIDON2_BN256_PARAMST3;
     use std::convert::TryFrom;
 
     use halo2_proofs::halo2curves::bn256::Fr;
@@ -234,7 +490,7 @@ mod poseidon2_tests_bn256 {
 
     #[test]
     fn consistent_perm() {
-        let poseidon2 = Poseidon2::new(&POSEIDON2_BN256_PARAMS);
+        let poseidon2 = Poseidon2::new(&POSEIDON2_BN256_PARAMST3);
         let t = poseidon2.params.t;
         for _ in 0..TESTRUNS {
             let input1: Vec<Scalar> = (0..t).map(|_| Scalar::random(&mut thread_rng())).collect();
@@ -257,7 +513,7 @@ mod poseidon2_tests_bn256 {
 
     #[test]
     fn kats() {
-        let poseidon2 = Poseidon2::new(&POSEIDON2_BN256_PARAMS);
+        let poseidon2 = Poseidon2::new(&POSEIDON2_BN256_PARAMST3);
         let mut input: Vec<Scalar> = vec![];
         for i in 0..poseidon2.params.t {
             input.push(Scalar::from(i as u64));

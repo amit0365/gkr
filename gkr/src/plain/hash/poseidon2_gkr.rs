@@ -1,32 +1,54 @@
 use std::marker::PhantomData;
 use halo2_proofs::halo2curves::ff::{Field, PrimeField};
-use crate::{plain::scalar_mul::DblAddSelectGate, util::arithmetic::{fe_to_bits_le, fe_to_fe}};
-use super::poseidon2_instance_bn256::POSEIDON2_BN256_PARAMS;
+use crate::{plain::{hash::poseidon2::{AddRcGate, MatmulM4Gate, Sbox5T4Gate}, scalar_mul::DblAddSelectGate}, util::arithmetic::{fe_to_bits_le, fe_to_fe}};
+use super::{poseidon2_instance_bn256::POSEIDON2_BN256_PARAMST4, poseidon2_params::Poseidon2Params};
 use super::poseidon2::Poseidon2;
 use halo2_proofs::halo2curves::bn256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Poseidon2Gate<F: Field> {
-    _marker: PhantomData<F>,
+pub struct Poseidon2T4Gate<F: PrimeField> {
+    params: Poseidon2Params<F>,
 }
 
-impl<F: PrimeField> Poseidon2Gate<F> {
-    pub fn new() -> Self {
+impl<F: PrimeField> Poseidon2T4Gate<F> {
+    pub fn new(params: &Poseidon2Params<F>) -> Self {
         Self {
-            _marker: PhantomData,
+            params: params.clone(),
         }
     }
 
     pub fn evaluate(&self, inputs: &[F], index: Option<usize>) -> F {
         let mut inputs = inputs.to_vec();
-        let scalar = inputs.last().unwrap();
-        let scalar_bits = fe_to_bits_le(scalar.clone());
-        for i in 0..scalar_bits.len() {
-            let outputs = Poseidon2::new(&POSEIDON2_BN256_PARAMS).permutation(&inputs.iter().map(|x| fe_to_fe::<F, bn256::Fr>(*x)).collect::<Vec<_>>());
-            inputs = outputs[..6].iter().map(|x| fe_to_fe::<bn256::Fr, F>(*x)).collect();
-        };
+        let t = 4;
+        assert_eq!(inputs.len(), t);
+
+        let mut current_state = inputs.to_owned();
+
+        // Linear layer at beginning
+        let matmul_m4 = MatmulM4Gate::<F>::new();
+        current_state = matmul_m4.evaluate_full(&current_state);
+
+        for r in 0..self.params.rounds_f_beginning {
+            current_state = AddRcGate::<F>::new(self.params.round_constants[r].clone()).evaluate_full(&current_state);
+            current_state = Sbox5T4Gate::<F>::new().evaluate_full(&current_state);
+            current_state = MatmulM4Gate::<F>::new().evaluate_full(&current_state);
+        }
+
+        let p_end = self.params.rounds_f_beginning + self.params.rounds_p;
+        for r in self.params.rounds_f_beginning..p_end {
+            current_state[0].add_assign(&self.params.round_constants[r][0]);
+            current_state[0] = Sbox5T4Gate::<F>::new().evaluate(&[current_state[0]], Some(0));
+            current_state = MatmulM4Gate::<F>::new().evaluate_full(&current_state);
+        }
+        
+        for r in p_end..self.params.rounds {
+            current_state = AddRcGate::<F>::new(self.params.round_constants[r].clone()).evaluate_full(&current_state);
+            current_state = Sbox5T4Gate::<F>::new().evaluate_full(&current_state);
+            current_state = MatmulM4Gate::<F>::new().evaluate_full(&current_state);
+        }
+
         if let Some(index) = index {
-            inputs[index]
+            current_state[index]
         } else {
             panic!("index is not set");
         }
@@ -45,7 +67,7 @@ impl<F: PrimeField> Poseidon2Gate<F> {
     }
 
     pub fn name(&self) -> String {
-        "scalar_mul".to_string()
+        "poseidon2_t4".to_string()
     }
 }
 
@@ -57,6 +79,7 @@ mod tests {
     use itertools::Itertools;
     use std::collections::HashMap;
     use crate::plain::gkr::gkr_verify;
+    use crate::plain::hash::poseidon2_instance_bn256::POSEIDON2_BN256_PARAMST4;
 
     use halo2_proofs::{arithmetic::Field, halo2curves::bn256::Fr};
     use crate::plain::gkr::{gkr_prove, AddGate, AnyGate, GKRCircuit, Wire, WireAssignment};
@@ -84,19 +107,22 @@ mod tests {
 		let p0_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 1)];
 		let p1_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 2)];
         let p2_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 3)];
+        let p3_terms: Vec<(usize, usize)> = vec![(0, 1), (1, 4)];
 
 		let input_polys = [
 			MultivariatePolynomial::new(vec![p0_terms.clone()], vec![Fr::ONE], 2, 2, m).unwrap(), 
 			MultivariatePolynomial::new(vec![p1_terms.clone()], vec![Fr::ONE], 2, 3, m).unwrap(),
             MultivariatePolynomial::new(vec![p2_terms.clone()], vec![Fr::ONE], 2, 4, m).unwrap(),
+            MultivariatePolynomial::new(vec![p3_terms.clone()], vec![Fr::ONE], 2, 5, m).unwrap(),
 		];
-        let output_poly = MultivariatePolynomial::new(vec![p0_terms, p1_terms, p2_terms], 
-            vec![Fr::ONE; 3], 2, 7, m).unwrap();
+        let output_poly = MultivariatePolynomial::new(vec![p0_terms, p1_terms, p2_terms, p3_terms], 
+            vec![Fr::ONE; 4], 2, 5, m).unwrap();
 
         let c = {
             let wires = (0..6).map(|_| Wire::new(AnyGate::new_identity(), vec![], 1)).collect_vec();
-            vec![wires[0].clone(), wires[1].clone(), wires[2].clone(), Wire::new(AnyGate::new_dbl_add(), 
-            vec![wires[0].clone(), wires[1].clone(), wires[2].clone()], 3)]
+            vec![wires[0].clone(), wires[1].clone(), wires[2].clone(), wires[3].clone(), 
+            Wire::new(AnyGate::new_poseidon2_t4(&POSEIDON2_BN256_PARAMST4), 
+            vec![wires[0].clone(), wires[1].clone(), wires[2].clone(), wires[3].clone()], 1)]
         };
 
         let mut assignment = HashMap::new();
